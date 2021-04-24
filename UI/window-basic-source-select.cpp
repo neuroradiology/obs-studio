@@ -28,10 +28,13 @@ struct AddSourceData {
 
 bool OBSBasicSourceSelect::EnumSources(void *data, obs_source_t *source)
 {
+	if (obs_source_is_hidden(source))
+		return false;
+
 	OBSBasicSourceSelect *window =
 		static_cast<OBSBasicSourceSelect *>(data);
 	const char *name = obs_source_get_name(source);
-	const char *id = obs_source_get_id(source);
+	const char *id = obs_source_get_unversioned_id(source);
 
 	if (strcmp(id, window->id) == 0)
 		window->ui->sourceList->addItem(QT_UTF8(name));
@@ -44,7 +47,7 @@ bool OBSBasicSourceSelect::EnumGroups(void *data, obs_source_t *source)
 	OBSBasicSourceSelect *window =
 		static_cast<OBSBasicSourceSelect *>(data);
 	const char *name = obs_source_get_name(source);
-	const char *id = obs_source_get_id(source);
+	const char *id = obs_source_get_unversioned_id(source);
 
 	if (strcmp(id, window->id) == 0) {
 		OBSBasic *main =
@@ -82,7 +85,7 @@ void OBSBasicSourceSelect::OBSSourceRemoved(void *data, calldata_t *calldata)
 void OBSBasicSourceSelect::SourceAdded(OBSSource source)
 {
 	const char *name = obs_source_get_name(source);
-	const char *sourceId = obs_source_get_id(source);
+	const char *sourceId = obs_source_get_unversioned_id(source);
 
 	if (strcmp(sourceId, id) != 0)
 		return;
@@ -93,7 +96,7 @@ void OBSBasicSourceSelect::SourceAdded(OBSSource source)
 void OBSBasicSourceSelect::SourceRemoved(OBSSource source)
 {
 	const char *name = obs_source_get_name(source);
-	const char *sourceId = obs_source_get_id(source);
+	const char *sourceId = obs_source_get_unversioned_id(source);
 
 	if (strcmp(sourceId, id) != 0)
 		return;
@@ -179,12 +182,13 @@ bool AddNew(QWidget *parent, const char *id, const char *name,
 		return false;
 
 	obs_source_t *source = obs_get_source_by_name(name);
-	if (source) {
+	if (source && parent) {
 		OBSMessageBox::information(parent, QTStr("NameExists.Title"),
 					   QTStr("NameExists.Text"));
 
 	} else {
-		source = obs_source_create(id, name, NULL, nullptr);
+		const char *v_id = obs_get_latest_input_type_id(id);
+		source = obs_source_create(v_id, name, NULL, nullptr);
 
 		if (source) {
 			AddSourceData data;
@@ -235,6 +239,63 @@ void OBSBasicSourceSelect::on_buttonBox_accepted()
 		if (!AddNew(this, id, QT_TO_UTF8(ui->sourceName->text()),
 			    visible, newSource))
 			return;
+
+		OBSBasic *main =
+			reinterpret_cast<OBSBasic *>(App()->GetMainWindow());
+		std::string scene_name =
+			obs_source_get_name(main->GetCurrentSceneSource());
+		auto undo = [scene_name, main](const std::string &data) {
+			obs_source_t *source =
+				obs_get_source_by_name(data.c_str());
+			obs_source_release(source);
+			obs_source_remove(source);
+
+			obs_source_t *scene_source =
+				obs_get_source_by_name(scene_name.c_str());
+			main->SetCurrentScene(scene_source, true);
+			obs_source_release(scene_source);
+
+			main->RefreshSources(main->GetCurrentScene());
+		};
+		obs_data_t *wrapper = obs_data_create();
+		obs_data_set_string(wrapper, "id", id);
+		obs_sceneitem_t *item = obs_scene_sceneitem_from_source(
+			main->GetCurrentScene(), newSource);
+		obs_data_set_int(wrapper, "item_id",
+				 obs_sceneitem_get_id(item));
+		obs_data_set_string(
+			wrapper, "name",
+			ui->sourceName->text().toUtf8().constData());
+		obs_data_set_bool(wrapper, "visible", visible);
+
+		auto redo = [scene_name, main](const std::string &data) {
+			obs_data_t *dat =
+				obs_data_create_from_json(data.c_str());
+			OBSSource source;
+			AddNew(NULL, obs_data_get_string(dat, "id"),
+			       obs_data_get_string(dat, "name"),
+			       obs_data_get_bool(dat, "visible"), source);
+			obs_sceneitem_t *item = obs_scene_sceneitem_from_source(
+				main->GetCurrentScene(), source);
+			obs_sceneitem_set_id(item, (int64_t)obs_data_get_int(
+							   dat, "item_id"));
+
+			obs_source_t *scene_source =
+				obs_get_source_by_name(scene_name.c_str());
+			main->SetCurrentScene(scene_source, true);
+			obs_source_release(scene_source);
+
+			main->RefreshSources(main->GetCurrentScene());
+			obs_data_release(dat);
+			obs_sceneitem_release(item);
+		};
+		undo_s.add_action(QTStr("Undo.Add").arg(ui->sourceName->text()),
+				  undo, redo,
+				  std::string(obs_source_get_name(newSource)),
+				  std::string(obs_data_get_json(wrapper)),
+				  NULL);
+		obs_data_release(wrapper);
+		obs_sceneitem_release(item);
 	}
 
 	done(DialogCode::Accepted);
@@ -249,7 +310,8 @@ static inline const char *GetSourceDisplayName(const char *id)
 {
 	if (strcmp(id, "scene") == 0)
 		return Str("Basic.Scene");
-	return obs_source_get_display_name(id);
+	const char *v_id = obs_get_latest_input_type_id(id);
+	return obs_source_get_display_name(v_id);
 }
 
 Q_DECLARE_METATYPE(OBSScene);
@@ -259,8 +321,12 @@ template<typename T> static inline T GetOBSRef(QListWidgetItem *item)
 	return item->data(static_cast<int>(QtDataRole::OBSRef)).value<T>();
 }
 
-OBSBasicSourceSelect::OBSBasicSourceSelect(OBSBasic *parent, const char *id_)
-	: QDialog(parent), ui(new Ui::OBSBasicSourceSelect), id(id_)
+OBSBasicSourceSelect::OBSBasicSourceSelect(OBSBasic *parent, const char *id_,
+					   undo_stack &undo_s)
+	: QDialog(parent),
+	  ui(new Ui::OBSBasicSourceSelect),
+	  id(id_),
+	  undo_s(undo_s)
 {
 	setWindowFlags(windowFlags() & ~Qt::WindowContextHelpButtonHint);
 

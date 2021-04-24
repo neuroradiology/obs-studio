@@ -52,7 +52,8 @@ device_cubetexture_create(gs_device_t *device, uint32_t size,
 EXPORT gs_texture_t *
 device_voltexture_create(gs_device_t *device, uint32_t width, uint32_t height,
 			 uint32_t depth, enum gs_color_format color_format,
-			 uint32_t levels, const uint8_t **data, uint32_t flags);
+			 uint32_t levels, const uint8_t *const *data,
+			 uint32_t flags);
 EXPORT gs_zstencil_t *device_zstencil_create(gs_device_t *device,
 					     uint32_t width, uint32_t height,
 					     enum gs_zstencil_format format);
@@ -87,6 +88,8 @@ EXPORT void device_load_indexbuffer(gs_device_t *device,
 				    gs_indexbuffer_t *indexbuffer);
 EXPORT void device_load_texture(gs_device_t *device, gs_texture_t *tex,
 				int unit);
+EXPORT void device_load_texture_srgb(gs_device_t *device, gs_texture_t *tex,
+				     int unit);
 EXPORT void device_load_samplerstate(gs_device_t *device,
 				     gs_samplerstate_t *samplerstate, int unit);
 EXPORT void device_load_vertexshader(gs_device_t *device,
@@ -104,6 +107,8 @@ EXPORT void device_set_render_target(gs_device_t *device, gs_texture_t *tex,
 EXPORT void device_set_cube_render_target(gs_device_t *device,
 					  gs_texture_t *cubetex, int side,
 					  gs_zstencil_t *zstencil);
+EXPORT void device_enable_framebuffer_srgb(gs_device_t *device, bool enable);
+EXPORT bool device_framebuffer_srgb_enabled(gs_device_t *device);
 EXPORT void device_copy_texture(gs_device_t *device, gs_texture_t *dst,
 				gs_texture_t *src);
 EXPORT void device_copy_texture_region(gs_device_t *device, gs_texture_t *dst,
@@ -164,6 +169,16 @@ EXPORT void device_debug_marker_begin(gs_device_t *device,
 				      const char *markername,
 				      const float color[4]);
 EXPORT void device_debug_marker_end(gs_device_t *device);
+
+#if __linux__
+
+EXPORT gs_texture_t *device_texture_create_from_dmabuf(
+	gs_device_t *device, unsigned int width, unsigned int height,
+	uint32_t drm_format, enum gs_color_format color_format,
+	uint32_t n_planes, const int *fds, const uint32_t *strides,
+	const uint32_t *offsets, const uint64_t *modifiers);
+
+#endif
 
 #ifdef __cplusplus
 }

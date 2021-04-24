@@ -142,7 +142,6 @@ SourceTree::item {
 	margin-bottom: 2px;
 	margin-top: 0px;
 	border: 1px solid transparent;
-	height: 24px;
 }
 
 QListWidget QLineEdit {
@@ -155,6 +154,11 @@ QListWidget QLineEdit {
 }
 
 /* Dock stuff */
+QDockWidget {
+	titlebar-close-icon: url('./Dark/close.svg');
+	titlebar-normal-icon: url('./Dark/popout.svg');
+}
+
 QDockWidget {
 	background: #181819;
 	border: none;
@@ -183,6 +187,7 @@ QDockWidget::float-button {
 	subcontrol-position: top right;
 	subcontrol-origin: padding;
 	right: 0px;
+	margin: 0px;
 }
 
 QDockWidget::float-button {
@@ -306,6 +311,24 @@ QScrollBar::left-arrow:horizontal, QScrollBar::right-arrow:horizontal, QScrollBa
 	color: none;
 }
 
+/* Source Context */
+#contextContainer {
+    min-height: 40px;
+    max-height: 40px;
+}
+
+#contextContainer QPushButton {
+    padding: 0px 12px;
+}
+
+QPushButton#sourcePropertiesButton {
+    qproperty-icon: url(./Dark/settings/general.svg);
+}
+
+QPushButton#sourceFiltersButton {
+    qproperty-icon: url(./Dark/filter.svg);
+}
+
 /* Scenes and Sources toolbar */
 
 QToolBar {
@@ -338,6 +361,10 @@ QToolButton:pressed {
 
 * [themeID="configIconSmall"] {
 	qproperty-icon: url(./Dark/settings/general.svg);
+}
+
+* [themeID="refreshIconSmall"] {
+    qproperty-icon: url(./Dark/refresh.svg);
 }
 
 * [themeID="upArrowIconSmall"] {
@@ -924,6 +951,24 @@ OBSBasicSettings QListWidget::item {
     padding-bottom: 5px;
 }
 
+/* Table */
+
+QTableView {
+    gridline-color: #333336;
+}
+
+QHeaderView {
+    border: none;
+}
+QHeaderView::section {
+    background-color: #101010;
+    border: 1px solid #333336;
+    border-left: none;
+}
+*[themeID="trashIcon"] {
+    margin: 0;
+}
+
 /* Locked CheckBox */
 
 LockedCheckBox {
@@ -1003,6 +1048,10 @@ QPushButton#extraPanelDelete:pressed {
     background-color: #161f41;
 }
 
+OBSMissingFiles {
+	qproperty-warningIcon: url(./Dark/alert.svg);
+}
+
 /* Source Icons */
 
 OBSBasic {
@@ -1049,4 +1098,61 @@ SceneTree#scenes {
 
 * [themeID="replayIconSmall"] {
     qproperty-icon: url(./Dark/save.svg);
+}
+
+/* Studio Mode T-Bar */
+
+QSlider[themeID="tBarSlider"] {
+	height: 28px;
+}
+
+QSlider::groove:horizontal[themeID="tBarSlider"] {
+	height: 5px;
+	background-color: QLinearGradient(x1: 0, y1: 0, x2: 0, y2: 1,
+		stop: 0 rgb(31,30,31),
+		stop: 0.75 rgb(50, 49, 50));
+	border: none;
+	border-radius: 2px;
+}
+
+QSlider::sub-page:horizontal[themeID="tBarSlider"] {
+	height: 5px;
+	background-color: QLinearGradient(x1: 0, y1: 0, x2: 0, y2: 1,
+		stop: 0 rgb(31,30,31),
+		stop: 0.75 rgb(50, 49, 50));
+	border: none;
+	border-radius: 2px;
+}
+
+QSlider::handle:horizontal[themeID="tBarSlider"] {
+	background-color: #d2d2d2;
+	width: 14px;
+	height: 28px;
+	margin: -28px 0px;
+}
+
+/* Media icons */
+
+* [themeID="playIcon"] {
+    qproperty-icon: url(./Dark/media/media_play.svg);
+}
+
+* [themeID="pauseIcon"] {
+    qproperty-icon: url(./Dark/media/media_pause.svg);
+}
+
+* [themeID="restartIcon"] {
+    qproperty-icon: url(./Dark/media/media_restart.svg);
+}
+
+* [themeID="stopIcon"] {
+    qproperty-icon: url(./Dark/media/media_stop.svg);
+}
+
+* [themeID="nextIcon"] {
+    qproperty-icon: url(./Dark/media/media_next.svg);
+}
+
+* [themeID="previousIcon"] {
+    qproperty-icon: url(./Dark/media/media_previous.svg);
 }

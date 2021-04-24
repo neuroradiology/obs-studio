@@ -142,6 +142,20 @@ Source Definition Structure (obs_source_info)
      from creating an audio feedback loop.  This is primarily only used
      with desktop audio capture sources.
 
+   - **OBS_SOURCE_CAP_DISABLED** - This source type has been disabled
+     and should not be shown as a type of source the user can add.
+
+   - **OBS_SOURCE_CAP_OBSOLETE** - This source type is obsolete and
+     should not be shown as a type of source the user can add.
+     Identical to *OBS_SOURCE_CAP_DISABLED*.  Meant to be used when a
+     source has changed in some way (mostly defaults/properties), but
+     you want to avoid breaking older configurations.  Basically solves
+     the problem of "I want to change the defaults of a source but I
+     don't want to break people's configurations"
+
+   - **OBS_SOURCE_CONTROLLABLE_MEDIA** - This source has media that can
+     be controlled
+
 .. member:: const char *(*obs_source_info.get_name)(void *type_data)
 
    Get the translated name of the source type.
@@ -412,6 +426,70 @@ Source Definition Structure (obs_source_info)
 
    (Optional)
 
+.. member:: enum obs_icon_type obs_source_info.icon_type
+
+   Icon used for the source.
+
+   - **OBS_ICON_TYPE_UNKNOWN**         - Unknown
+   - **OBS_ICON_TYPE_IMAGE**           - Image
+   - **OBS_ICON_TYPE_COLOR**           - Color
+   - **OBS_ICON_TYPE_SLIDESHOW**       - Slideshow
+   - **OBS_ICON_TYPE_AUDIO_INPUT**     - Audio Input
+   - **OBS_ICON_TYPE_AUDIO_OUTPUT**    - Audio Output
+   - **OBS_ICON_TYPE_DESKTOP_CAPTURE** - Desktop Capture
+   - **OBS_ICON_TYPE_WINDOW_CAPTURE**  - Window Capture
+   - **OBS_ICON_TYPE_GAME_CAPTURE**    - Game Capture
+   - **OBS_ICON_TYPE_CAMERA**          - Camera
+   - **OBS_ICON_TYPE_TEXT**            - Text
+   - **OBS_ICON_TYPE_MEDIA**           - Media
+   - **OBS_ICON_TYPE_BROWSER**         - Browser
+   - **OBS_ICON_TYPE_CUSTOM**          - Custom (not implemented yet)
+
+.. member:: void (*obs_source_info.media_play_pause)(void *data, bool pause)
+
+   Called to pause or play media.
+
+.. member:: void (*obs_source_info.media_restart)(void *data)
+
+   Called to restart the media.
+
+.. member:: void (*obs_source_info.media_stop)(void *data)
+
+   Called to stop the media.
+
+.. member:: void (*obs_source_info.media_next)(void *data)
+
+   Called to go to the next media.
+
+.. member:: void (*obs_source_info.media_previous)(void *data)
+
+   Called to go to the previous media.
+
+.. member:: int64_t (*obs_source_info.media_get_duration)(void *data)
+
+   Called to get the media duration.
+
+.. member:: int64_t (*obs_source_info.media_get_time)(void *data)
+
+   Called to get the current time of the media.
+
+.. member:: void (*obs_source_info.media_set_time)(void *data, int64_t miliseconds)
+
+   Called to set the media time.
+
+.. member:: enum obs_media_state (*obs_source_info.media_get_state)(void *data)
+
+   Called to get the state of the media.
+
+   - **OBS_MEDIA_STATE_NONE**      - None
+   - **OBS_MEDIA_STATE_PLAYING**   - Playing
+   - **OBS_MEDIA_STATE_OPENING**   - Opening
+   - **OBS_MEDIA_STATE_BUFFERING** - Buffering
+   - **OBS_MEDIA_STATE_PAUSED**    - Paused
+   - **OBS_MEDIA_STATE_STOPPED**   - Stopped
+   - **OBS_MEDIA_STATE_ENDED**     - Ended
+   - **OBS_MEDIA_STATE_ERROR**     - Error
+
 
 .. _source_signal_handler_reference:
 
@@ -528,6 +606,37 @@ Source Signals
 
    Called when a transition has stopped.
 
+**media_started**
+
+   Called when media has started.
+
+**media_ended**
+
+   Called when media has ended.
+
+**media_pause**
+
+   Called when media has been paused.
+
+**media_play**
+
+   Called when media starts playing.
+
+**media_restart**
+
+   Called when the playing of media has been restarted.
+
+**media_stopped**
+
+   Called when the playing of media has been stopped.
+
+**media_next**
+
+   Called when the media source switches to the next media.
+
+**media_previous**
+
+   Called when the media source switches to the previous media.
 
 General Source Functions
 ------------------------
@@ -641,6 +750,19 @@ General Source Functions
 .. function:: bool obs_source_removed(const obs_source_t *source)
 
    :return: *true* if the source should be released
+
+---------------------
+
+.. function:: void obs_source_set_hidden(obs_source_t *source, bool hidden)
+
+   Sets the hidden flag that determines whether it should be hidden from the user.
+   Used when the source is still alive but should not be referenced.
+
+---------------------
+
+.. function:: bool obs_source_is_hidden(obs_source_t *source)
+
+  :return: *true* if source's 'hidden' is set true
 
 ---------------------
 
@@ -904,6 +1026,12 @@ General Source Functions
 
 ---------------------
 
+.. function:: size_t obs_source_filter_count(const obs_source_t *source)
+
+   Returns the number of filters the source has.
+
+---------------------
+
 .. function:: bool obs_source_enabled(const obs_source_t *source)
               void obs_source_set_enabled(obs_source_t *source, bool enabled)
 
@@ -1077,6 +1205,14 @@ Functions used by sources
 
 ---------------------
 
+.. function:: void obs_source_set_async_rotation(obs_source_t *source, long rotation)
+
+   Allows the ability to set rotation (0, 90, 180, -90, 270) for an
+   async video source.  The rotation will be automatically applied to
+   the source.
+
+---------------------
+
 .. function:: void obs_source_preload_video(obs_source_t *source, const struct obs_source_frame *frame)
 
    Preloads a video frame to ensure a frame is ready for playback as
@@ -1198,9 +1334,29 @@ Functions used by filters
 
 ---------------------
 
+.. function:: void obs_source_process_filter_end_srgb(obs_source_t *filter, gs_effect_t *effect, uint32_t width, uint32_t height)
+
+   Draws the filter using the effect's "Draw" technique, and use automatic SRGB conversion.
+  
+   Before calling this function, first call obs_source_process_filter_begin and
+   then set the effect parameters, and then call this function to finalize the
+   filter.
+
+---------------------
+
 .. function:: void obs_source_process_filter_tech_end(obs_source_t *filter, gs_effect_t *effect, uint32_t width, uint32_t height, const char *tech_name)
 
    Draws the filter with a specific technique in the effect.
+  
+   Before calling this function, first call obs_source_process_filter_begin and
+   then set the effect parameters, and then call this function to finalize the
+   filter.
+
+---------------------
+
+.. function:: void obs_source_process_filter_tech_end_srgb(obs_source_t *filter, gs_effect_t *effect, uint32_t width, uint32_t height, const char *tech_name)
+
+   Draws the filter with a specific technique in the effect, and use automatic SRGB conversion.
   
    Before calling this function, first call obs_source_process_filter_begin and
    then set the effect parameters, and then call this function to finalize the

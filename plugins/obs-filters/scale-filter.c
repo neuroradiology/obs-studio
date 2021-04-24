@@ -195,9 +195,7 @@ static void scale_filter_tick(void *data, float seconds)
 		} else {
 			if (new_aspect > old_aspect) {
 				filter->cx_out = (int)(cy_f * new_aspect);
-				filter->cy_out = cy;
 			} else {
-				filter->cx_out = cx;
 				filter->cy_out = (int)(cx_f / new_aspect);
 			}
 		}
@@ -299,9 +297,9 @@ static void scale_filter_render(void *data, gs_effect_t *effect)
 		gs_effect_set_next_sampler(filter->image_param,
 					   filter->point_sampler);
 
-	obs_source_process_filter_tech_end(filter->context, filter->effect,
-					   filter->cx_out, filter->cy_out,
-					   technique);
+	obs_source_process_filter_tech_end_srgb(filter->context, filter->effect,
+						filter->cx_out, filter->cy_out,
+						technique);
 
 	UNUSED_PARAMETER(effect);
 }

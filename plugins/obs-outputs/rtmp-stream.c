@@ -110,7 +110,7 @@ static void rtmp_stream_destroy(void *data)
 		}
 	}
 
-	RTMP_TLS_Free();
+	RTMP_TLS_Free(&stream->rtmp);
 	free_packets(stream);
 	dstr_free(&stream->path);
 	dstr_free(&stream->key);
@@ -145,8 +145,8 @@ static void *rtmp_stream_create(obs_data_t *settings, obs_output_t *output)
 	stream->output = output;
 	pthread_mutex_init_value(&stream->packets_mutex);
 
-	RTMP_Init(&stream->rtmp);
 	RTMP_LogSetCallback(log_rtmp);
+	RTMP_Init(&stream->rtmp);
 	RTMP_LogSetLevel(RTMP_LOGWARNING);
 
 	if (pthread_mutex_init(&stream->packets_mutex, NULL) != 0)
@@ -407,6 +407,8 @@ static int send_packet(struct rtmp_stream *stream,
 	int recv_size = 0;
 	int ret = 0;
 
+	assert(idx < RTMP_MAX_STREAMS);
+
 	if (!stream->new_socket_loop) {
 #ifdef _WIN32
 		ret = ioctlsocket(stream->rtmp.m_sb.sb_socket, FIONREAD,
@@ -421,14 +423,20 @@ static int send_packet(struct rtmp_stream *stream,
 		}
 	}
 
-	flv_packet_mux(packet, is_header ? 0 : stream->start_dts_offset, &data,
-		       &size, is_header);
+	if (idx > 0) {
+		flv_additional_packet_mux(
+			packet, is_header ? 0 : stream->start_dts_offset, &data,
+			&size, is_header, idx);
+	} else {
+		flv_packet_mux(packet, is_header ? 0 : stream->start_dts_offset,
+			       &data, &size, is_header);
+	}
 
 #ifdef TEST_FRAMEDROPS
 	droptest_cap_data_rate(stream, size);
 #endif
 
-	ret = RTMP_Write(&stream->rtmp, (char *)data, (int)size, (int)idx);
+	ret = RTMP_Write(&stream->rtmp, (char *)data, (int)size, 0);
 	bfree(data);
 
 	if (is_header)
@@ -514,10 +522,18 @@ static void set_output_error(struct rtmp_stream *stream)
 		case -0x2700:
 			msg = obs_module_text("SSLCertVerifyFailed");
 			break;
+		case -0x7680:
+			msg = "Failed to load root certificates for a secure TLS connection."
+#if defined(__linux__)
+			      " Check you have an up to date root certificate bundle in /etc/ssl/certs."
+#endif
+				;
+			break;
 		}
 	}
 
-	obs_output_set_last_error(stream->output, msg);
+	if (msg)
+		obs_output_set_last_error(stream->output, msg);
 }
 
 static void dbr_add_frame(struct rtmp_stream *stream, struct dbr_frame *back)
@@ -649,20 +665,30 @@ static void *send_thread(void *data)
 	return NULL;
 }
 
-static bool send_meta_data(struct rtmp_stream *stream, size_t idx, bool *next)
+static bool send_additional_meta_data(struct rtmp_stream *stream)
 {
 	uint8_t *meta_data;
 	size_t meta_data_size;
 	bool success = true;
 
-	*next = flv_meta_data(stream->output, &meta_data, &meta_data_size,
-			      false, idx);
+	flv_additional_meta_data(stream->output, &meta_data, &meta_data_size);
+	success = RTMP_Write(&stream->rtmp, (char *)meta_data,
+			     (int)meta_data_size, 0) >= 0;
+	bfree(meta_data);
 
-	if (*next) {
-		success = RTMP_Write(&stream->rtmp, (char *)meta_data,
-				     (int)meta_data_size, (int)idx) >= 0;
-		bfree(meta_data);
-	}
+	return success;
+}
+
+static bool send_meta_data(struct rtmp_stream *stream)
+{
+	uint8_t *meta_data;
+	size_t meta_data_size;
+	bool success = true;
+
+	flv_meta_data(stream->output, &meta_data, &meta_data_size, false);
+	success = RTMP_Write(&stream->rtmp, (char *)meta_data,
+			     (int)meta_data_size, 0) >= 0;
+	bfree(meta_data);
 
 	return success;
 }
@@ -751,8 +777,7 @@ static void adjust_sndbuf_size(struct rtmp_stream *stream, int new_size)
 static int init_send(struct rtmp_stream *stream)
 {
 	int ret;
-	size_t idx = 0;
-	bool next = true;
+	obs_output_t *context = stream->output;
 
 #if defined(_WIN32)
 	adjust_sndbuf_size(stream, MIN_SENDBUF_SIZE);
@@ -790,7 +815,6 @@ static int init_send(struct rtmp_stream *stream)
 			bfree(stream->write_buf);
 
 		int total_bitrate = 0;
-		obs_output_t *context = stream->output;
 
 		obs_encoder_t *vencoder = obs_output_get_video_encoder(context);
 		if (vencoder) {
@@ -855,14 +879,25 @@ static int init_send(struct rtmp_stream *stream)
 	}
 
 	os_atomic_set_bool(&stream->active, true);
-	while (next) {
-		if (!send_meta_data(stream, idx++, &next)) {
-			warn("Disconnected while attempting to connect to "
-			     "server.");
-			set_output_error(stream);
-			return OBS_OUTPUT_DISCONNECTED;
-		}
+
+	if (!send_meta_data(stream)) {
+		warn("Disconnected while attempting to send metadata");
+		set_output_error(stream);
+		return OBS_OUTPUT_DISCONNECTED;
 	}
+
+	obs_encoder_t *aencoder = obs_output_get_audio_encoder(context, 1);
+	if (aencoder && !send_additional_meta_data(stream)) {
+		warn("Disconnected while attempting to send additional "
+		     "metadata");
+		return OBS_OUTPUT_DISCONNECTED;
+	}
+
+	if (obs_output_get_audio_encoder(context, 2) != NULL) {
+		warn("Additional audio streams not supported");
+		return OBS_OUTPUT_DISCONNECTED;
+	}
+
 	obs_output_begin_data_capture(stream->output, 0);
 
 	return OBS_OUTPUT_SUCCESS;
@@ -934,7 +969,16 @@ static int try_connect(struct rtmp_stream *stream)
 
 	info("Connecting to RTMP URL %s...", stream->path.array);
 
-	RTMP_Init(&stream->rtmp);
+	// on reconnect we need to reset the internal variables of librtmp
+	// otherwise the data sent/received will not parse correctly on the other end
+	RTMP_Reset(&stream->rtmp);
+
+	// since we don't call RTMP_Init above, there's no other good place
+	// to reset this as doing it in RTMP_Close breaks the ugly RTMP
+	// authentication system
+	memset(&stream->rtmp.Link, 0, sizeof(stream->rtmp.Link));
+	stream->rtmp.last_error_code = 0;
+
 	if (!RTMP_SetupURL(&stream->rtmp, stream->path.array))
 		return OBS_OUTPUT_BAD_PATH;
 
@@ -963,18 +1007,6 @@ static int try_connect(struct rtmp_stream *stream)
 	}
 
 	RTMP_AddStream(&stream->rtmp, stream->key.array);
-
-	for (size_t idx = 1;; idx++) {
-		obs_encoder_t *encoder =
-			obs_output_get_audio_encoder(stream->output, idx);
-		const char *encoder_name;
-
-		if (!encoder)
-			break;
-
-		encoder_name = obs_encoder_get_name(encoder);
-		RTMP_AddStream(&stream->rtmp, encoder_name);
-	}
 
 	stream->rtmp.m_outChunkSize = 4096;
 	stream->rtmp.m_bSendChunkSizeInfo = true;

@@ -3,6 +3,7 @@
 #include <util/darray.h>
 #include <util/dstr.h>
 #include <obs-avc.h>
+#include <libavutil/rational.h>
 #define INITGUID
 #include <dxgi.h>
 #include <d3d11.h>
@@ -41,15 +42,16 @@ struct nvenc_data {
 	void *session;
 	NV_ENC_INITIALIZE_PARAMS params;
 	NV_ENC_CONFIG config;
-	size_t buf_count;
-	size_t output_delay;
-	size_t buffers_queued;
+	int rc_lookahead;
+	int buf_count;
+	int output_delay;
+	int buffers_queued;
 	size_t next_bitstream;
 	size_t cur_bitstream;
 	bool encode_started;
 	bool first_packet;
 	bool can_change_bitrate;
-	bool bframes;
+	int32_t bframes;
 
 	DARRAY(struct nv_bitstream) bitstreams;
 	DARRAY(struct nv_texture) textures;
@@ -81,18 +83,7 @@ struct nv_bitstream {
 	HANDLE event;
 };
 
-static inline bool nv_failed(struct nvenc_data *enc, NVENCSTATUS err,
-			     const char *func, const char *call)
-{
-	if (err == NV_ENC_SUCCESS)
-		return false;
-
-	error("%s: %s failed: %d (%s)", func, call, (int)err,
-	      nv_error_name(err));
-	return true;
-}
-
-#define NV_FAILED(x) nv_failed(enc, x, __FUNCTION__, #x)
+#define NV_FAILED(x) nv_failed(enc->encoder, x, __FUNCTION__, #x)
 
 static bool nv_bitstream_init(struct nvenc_data *enc, struct nv_bitstream *bs)
 {
@@ -400,7 +391,8 @@ static bool init_encoder(struct nvenc_data *enc, obs_data_t *settings)
 	err = nv.nvEncGetEncodePresetConfig(enc->session,
 					    NV_ENC_CODEC_H264_GUID, nv_preset,
 					    &preset_config);
-	if (nv_failed(enc, err, __FUNCTION__, "nvEncGetEncodePresetConfig")) {
+	if (nv_failed(enc->encoder, err, __FUNCTION__,
+		      "nvEncGetEncodePresetConfig")) {
 		return false;
 	}
 
@@ -418,44 +410,103 @@ static bool init_encoder(struct nvenc_data *enc, obs_data_t *settings)
 	NV_ENC_CONFIG_H264_VUI_PARAMETERS *vui_params =
 		&h264_config->h264VUIParameters;
 
+	int darWidth, darHeight;
+	av_reduce(&darWidth, &darHeight, voi->width, voi->height, 1024 * 1024);
+
 	memset(params, 0, sizeof(*params));
 	params->version = NV_ENC_INITIALIZE_PARAMS_VER;
 	params->encodeGUID = NV_ENC_CODEC_H264_GUID;
 	params->presetGUID = nv_preset;
 	params->encodeWidth = voi->width;
 	params->encodeHeight = voi->height;
-	params->darWidth = voi->width;
-	params->darHeight = voi->height;
+	params->darWidth = darWidth;
+	params->darHeight = darHeight;
 	params->frameRateNum = voi->fps_num;
 	params->frameRateDen = voi->fps_den;
 	params->enableEncodeAsync = 1;
 	params->enablePTD = 1;
 	params->encodeConfig = &enc->config;
-	params->maxEncodeWidth = voi->width;
-	params->maxEncodeHeight = voi->height;
 	config->gopLength = gop_size;
 	config->frameIntervalP = 1 + bf;
 	h264_config->idrPeriod = gop_size;
+
+	bool repeat_headers = obs_data_get_bool(settings, "repeat_headers");
+	if (repeat_headers) {
+		h264_config->repeatSPSPPS = 1;
+		h264_config->disableSPSPPS = 0;
+		h264_config->outputAUD = 1;
+	}
+
+	h264_config->sliceMode = 3;
+	h264_config->sliceModeData = 1;
+
+	h264_config->useBFramesAsRef = NV_ENC_BFRAME_REF_MODE_DISABLED;
+
 	vui_params->videoSignalTypePresentFlag = 1;
 	vui_params->videoFullRangeFlag = (voi->range == VIDEO_RANGE_FULL);
 	vui_params->colourDescriptionPresentFlag = 1;
-	vui_params->colourMatrix = (voi->colorspace == VIDEO_CS_709) ? 1 : 5;
-	vui_params->colourPrimaries = 1;
-	vui_params->transferCharacteristics = 1;
 
-	enc->bframes = bf > 0;
+	switch (voi->colorspace) {
+	case VIDEO_CS_601:
+		vui_params->colourPrimaries = 6;
+		vui_params->transferCharacteristics = 6;
+		vui_params->colourMatrix = 6;
+		break;
+	case VIDEO_CS_DEFAULT:
+	case VIDEO_CS_709:
+		vui_params->colourPrimaries = 1;
+		vui_params->transferCharacteristics = 1;
+		vui_params->colourMatrix = 1;
+		break;
+	case VIDEO_CS_SRGB:
+		vui_params->colourPrimaries = 1;
+		vui_params->transferCharacteristics = 13;
+		vui_params->colourMatrix = 1;
+		break;
+	}
+
+	enc->bframes = bf;
 
 	/* lookahead */
-	if (lookahead && nv_get_cap(enc, NV_ENC_CAPS_SUPPORT_LOOKAHEAD)) {
-		config->rcParams.lookaheadDepth = 8;
-		config->rcParams.enableLookahead = 1;
-	} else {
-		lookahead = false;
+	const bool use_profile_lookahead = config->rcParams.enableLookahead;
+	lookahead = nv_get_cap(enc, NV_ENC_CAPS_SUPPORT_LOOKAHEAD) &&
+		    (lookahead || use_profile_lookahead);
+	if (lookahead) {
+		enc->rc_lookahead = use_profile_lookahead
+					    ? config->rcParams.lookaheadDepth
+					    : 8;
+	}
+
+	int buf_count = max(4, config->frameIntervalP * 2 * 2);
+	if (lookahead) {
+		buf_count = max(buf_count, config->frameIntervalP +
+						   enc->rc_lookahead +
+						   EXTRA_BUFFERS);
+	}
+
+	buf_count = min(64, buf_count);
+	enc->buf_count = buf_count;
+
+	const int output_delay = buf_count - 1;
+	enc->output_delay = output_delay;
+
+	if (lookahead) {
+		const int lkd_bound = output_delay - config->frameIntervalP - 4;
+		if (lkd_bound >= 0) {
+			config->rcParams.enableLookahead = 1;
+			config->rcParams.lookaheadDepth =
+				max(enc->rc_lookahead, lkd_bound);
+			config->rcParams.disableIadapt = 0;
+			config->rcParams.disableBadapt = 0;
+		} else {
+			lookahead = false;
+		}
 	}
 
 	/* psycho aq */
 	if (nv_get_cap(enc, NV_ENC_CAPS_SUPPORT_TEMPORAL_AQ)) {
 		config->rcParams.enableAQ = psycho_aq;
+		config->rcParams.aqStrength = 8;
 		config->rcParams.enableTemporalAQ = psycho_aq;
 	}
 
@@ -492,6 +543,7 @@ static bool init_encoder(struct nvenc_data *enc, obs_data_t *settings)
 	h264_config->outputPictureTimingSEI = 1;
 	config->rcParams.averageBitRate = bitrate * 1000;
 	config->rcParams.maxBitRate = vbr ? max_bitrate * 1000 : bitrate * 1000;
+	config->rcParams.vbvBufferSize = bitrate * 1000;
 
 	/* -------------------------- */
 	/* profile                    */
@@ -510,10 +562,6 @@ static bool init_encoder(struct nvenc_data *enc, obs_data_t *settings)
 	if (NV_FAILED(nv.nvEncInitializeEncoder(enc->session, params))) {
 		return false;
 	}
-
-	enc->buf_count = config->frameIntervalP +
-			 config->rcParams.lookaheadDepth + EXTRA_BUFFERS;
-	enc->output_delay = enc->buf_count - 1;
 
 	info("settings:\n"
 	     "\trate_control: %s\n"
@@ -578,13 +626,19 @@ static void *nvenc_create(obs_data_t *settings, obs_encoder_t *encoder)
 	 * gpu other than the one OBS is currently running on. */
 	int gpu = (int)obs_data_get_int(settings, "gpu");
 	if (gpu != 0) {
+		info("different GPU selected by user, falling back to ffmpeg");
 		goto fail;
 	}
 
-	if (!obs_nv12_tex_active()) {
+	if (obs_encoder_scaling_enabled(encoder)) {
+		info("scaling enabled, falling back to ffmpeg");
 		goto fail;
 	}
-	if (!init_nvenc()) {
+	if (!obs_nv12_tex_active()) {
+		info("nv12 not active, falling back to ffmpeg");
+		goto fail;
+	}
+	if (!init_nvenc(encoder)) {
 		goto fail;
 	}
 	if (NV_FAILED(nv_create_instance(&init))) {
@@ -763,7 +817,8 @@ static bool get_encoded_packet(struct nvenc_data *enc, bool finalize)
 		if (nvtex->mapped_res) {
 			NVENCSTATUS err;
 			err = nv.nvEncUnmapInputResource(s, nvtex->mapped_res);
-			if (nv_failed(enc, err, __FUNCTION__, "unmap")) {
+			if (nv_failed(enc->encoder, err, __FUNCTION__,
+				      "unmap")) {
 				return false;
 			}
 			nvtex->mapped_res = NULL;
@@ -856,7 +911,8 @@ static bool nvenc_encode_tex(void *data, uint32_t handle, int64_t pts,
 
 	err = nv.nvEncEncodePicture(enc->session, &params);
 	if (err != NV_ENC_SUCCESS && err != NV_ENC_ERR_NEED_MORE_INPUT) {
-		nv_failed(enc, err, __FUNCTION__, "nvEncEncodePicture");
+		nv_failed(enc->encoder, err, __FUNCTION__,
+			  "nvEncEncodePicture");
 		return false;
 	}
 
@@ -882,8 +938,7 @@ static bool nvenc_encode_tex(void *data, uint32_t handle, int64_t pts,
 		circlebuf_pop_front(&enc->dts_list, &dts, sizeof(dts));
 
 		/* subtract bframe delay from dts */
-		if (enc->bframes)
-			dts -= packet->timebase_num;
+		dts -= (int64_t)enc->bframes * packet->timebase_num;
 
 		*received_packet = true;
 		packet->data = enc->packet_data.array;

@@ -3,15 +3,6 @@ set -ex
 
 curl -L https://packagecloud.io/github/git-lfs/gpgkey | sudo apt-key add -
 
-# gets us newer clang
-sudo bash -c "cat >> /etc/apt/sources.list" << LLVMAPT
-# 3.8
-deb http://apt.llvm.org/xenial/ llvm-toolchain-xenial-8 main
-deb-src http://apt.llvm.org/xenial/ llvm-toolchain-xenial-8 main
-LLVMAPT
-
-wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key|sudo apt-key add -
-
 sudo apt-get -qq update
 sudo apt-get install -y \
         build-essential \
@@ -47,9 +38,16 @@ sudo apt-get install -y \
         libxcb-xinerama0-dev \
         libxcomposite-dev \
         libxinerama-dev \
+        libmbedtls-dev \
         pkg-config \
         python3-dev \
         qtbase5-dev \
+        qtbase5-private-dev \
         libqt5svg5-dev \
         swig \
-        clang-format-8
+        linux-generic \
+        v4l2loopback-dkms
+
+# build cef
+wget --quiet --retry-connrefused --waitretry=1 https://cdn-fastly.obsproject.com/downloads/cef_binary_${LINUX_CEF_BUILD_VERSION}_linux64.tar.bz2
+tar -xjf ./cef_binary_${LINUX_CEF_BUILD_VERSION}_linux64.tar.bz2

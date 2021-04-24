@@ -23,9 +23,6 @@
 extern const double NSAppKitVersionNumber;
 #define NSAppKitVersionNumber10_8 1187
 
-#define APPLE_H264_ENC_ID_HW "com.apple.videotoolbox.videoencoder.h264.gva"
-#define APPLE_H264_ENC_ID_SW "com.apple.videotoolbox.videoencoder.h264"
-
 // Get around missing symbol on 10.8 during compilation
 enum { kCMFormatDescriptionBridgeError_InvalidParameter_ = -12712,
 };
@@ -490,15 +487,14 @@ static bool vt_h264_update(void *data, obs_data_t *settings)
 	return true;
 }
 
-static void *vt_h264_create(obs_data_t *settings, obs_encoder_t *encoder,
-			    const char *vt_encoder_id)
+static void *vt_h264_create(obs_data_t *settings, obs_encoder_t *encoder)
 {
 	struct vt_h264_encoder *enc = bzalloc(sizeof(struct vt_h264_encoder));
 
 	OSStatus code;
 
 	enc->encoder = encoder;
-	enc->vt_encoder_id = vt_encoder_id;
+	enc->vt_encoder_id = obs_encoder_get_id(encoder);
 
 	update_params(enc, settings);
 
@@ -514,16 +510,6 @@ static void *vt_h264_create(obs_data_t *settings, obs_encoder_t *encoder,
 fail:
 	vt_h264_destroy(enc);
 	return NULL;
-}
-
-static void *vt_h264_create_hw(obs_data_t *settings, obs_encoder_t *encoder)
-{
-	return vt_h264_create(settings, encoder, APPLE_H264_ENC_ID_HW);
-}
-
-static void *vt_h264_create_sw(obs_data_t *settings, obs_encoder_t *encoder)
-{
-	return vt_h264_create(settings, encoder, APPLE_H264_ENC_ID_SW);
 }
 
 static const uint8_t annexb_startcode[4] = {0, 0, 0, 1};
@@ -672,8 +658,6 @@ static bool is_sample_keyframe(CMSampleBufferRef buffer)
 static bool parse_sample(struct vt_h264_encoder *enc, CMSampleBufferRef buffer,
 			 struct encoder_packet *packet, CMTime off)
 {
-	uint8_t *start;
-	uint8_t *end;
 	int type;
 
 	CMTime pts = CMSampleBufferGetPresentationTimeStamp(buffer);
@@ -708,10 +692,11 @@ static bool parse_sample(struct vt_h264_encoder *enc, CMSampleBufferRef buffer,
 	packet->size = enc->packet_data.num;
 	packet->keyframe = keyframe;
 
-	/* ------------------------------------ */
-
-	start = enc->packet_data.array;
-	end = start + enc->packet_data.num;
+	// VideoToolbox produces packets with priority lower than the RTMP code
+	// expects, which causes it to be unable to recover from frame drops.
+	// Fix this by manually adjusting the priority.
+	uint8_t *start = enc->packet_data.array;
+	uint8_t *end = start + enc->packet_data.num;
 
 	start = (uint8_t *)obs_avc_find_startcode(start, end);
 	while (true) {
@@ -726,9 +711,10 @@ static bool parse_sample(struct vt_h264_encoder *enc, CMSampleBufferRef buffer,
 			uint8_t prev_type = (start[0] >> 5) & 0x3;
 			start[0] &= ~(3 << 5);
 
-			if (type & OBS_NAL_SLICE)
+			if (type == OBS_NAL_SLICE_IDR)
 				start[0] |= OBS_NAL_PRIORITY_HIGHEST << 5;
-			else if (type & OBS_NAL_SLICE_IDR)
+			else if (type == OBS_NAL_SLICE &&
+				 prev_type != OBS_NAL_PRIORITY_DISPOSABLE)
 				start[0] |= OBS_NAL_PRIORITY_HIGH << 5;
 			else
 				start[0] |= prev_type << 5;
@@ -736,8 +722,6 @@ static bool parse_sample(struct vt_h264_encoder *enc, CMSampleBufferRef buffer,
 
 		start = (uint8_t *)obs_avc_find_startcode(start, end);
 	}
-
-	/* ------------------------------------ */
 
 	CFRelease(buffer);
 	return true;
@@ -847,16 +831,16 @@ static bool vt_h264_extra_data(void *data, uint8_t **extra_data, size_t *size)
 	return true;
 }
 
-static const char *vt_h264_getname_hw(void *unused)
+static const char *vt_h264_getname(void *data)
 {
-	UNUSED_PARAMETER(unused);
-	return obs_module_text("VTH264EncHW");
-}
+	const char *disp_name = vt_encoders.array[(int)data].disp_name;
 
-static const char *vt_h264_getname_sw(void *unused)
-{
-	UNUSED_PARAMETER(unused);
-	return obs_module_text("VTH264EncSW");
+	if (strcmp("Apple H.264 (HW)", disp_name) == 0) {
+		return obs_module_text("VTH264EncHW");
+	} else if (strcmp("Apple H.264 (SW)", disp_name) == 0) {
+		return obs_module_text("VTH264EncSW");
+	}
+	return disp_name;
 }
 
 #define TEXT_VT_ENCODER obs_module_text("VTEncoder")
@@ -965,6 +949,8 @@ void encoder_list_create()
 		da_push_back(vt_encoders, &enc);
 #undef VT_DICTSTR
 	}
+
+	CFRelease(encoder_list);
 }
 
 void encoder_list_destroy()
@@ -994,19 +980,11 @@ void register_encoders()
 	};
 
 	for (size_t i = 0; i < vt_encoders.num; i++) {
-		if (strcmp(vt_encoders.array[i].id, APPLE_H264_ENC_ID_HW) ==
-		    0) {
-			info.id = "vt_h264_hw";
-			info.get_name = vt_h264_getname_hw;
-			info.create = vt_h264_create_hw;
-			obs_register_encoder(&info);
-		} else if (strcmp(vt_encoders.array[i].id,
-				  APPLE_H264_ENC_ID_SW) == 0) {
-			info.id = "vt_h264_sw";
-			info.get_name = vt_h264_getname_sw;
-			info.create = vt_h264_create_sw;
-			obs_register_encoder(&info);
-		}
+		info.id = vt_encoders.array[i].id;
+		info.type_data = (void *)i;
+		info.get_name = vt_h264_getname;
+		info.create = vt_h264_create;
+		obs_register_encoder(&info);
 	}
 }
 

@@ -40,12 +40,10 @@ const char *get_module_extension(void)
 #endif
 
 static const char *module_bin[] = {
-	"obs-plugins/" BIT_STRING,
 	"../../obs-plugins/" BIT_STRING,
 };
 
-static const char *module_data[] = {"data/%module%",
-				    "../../data/obs-plugins/%module%"};
+static const char *module_data[] = {"../../data/obs-plugins/%module%"};
 
 static const int module_patterns_size =
 	sizeof(module_bin) / sizeof(module_bin[0]);
@@ -61,9 +59,6 @@ char *find_libobs_data_file(const char *file)
 {
 	struct dstr path;
 	dstr_init(&path);
-
-	if (check_path(file, "data/libobs/", &path))
-		return path.array;
 
 	if (check_path(file, "../../data/libobs/", &path))
 		return path.array;
@@ -130,16 +125,22 @@ static void log_available_memory(void)
 	     (DWORD)(ms.ullAvailPhys / 1048576), note);
 }
 
+extern const char *get_win_release_id();
+
 static void log_windows_version(void)
 {
 	struct win_version_info ver;
 	get_win_ver(&ver);
 
+	const char *release_id = get_win_release_id();
+
 	bool b64 = is_64_bit_windows();
 	const char *windows_bitness = b64 ? "64" : "32";
 
-	blog(LOG_INFO, "Windows Version: %d.%d Build %d (revision: %d; %s-bit)",
-	     ver.major, ver.minor, ver.build, ver.revis, windows_bitness);
+	blog(LOG_INFO,
+	     "Windows Version: %d.%d Build %d (release: %s; revision: %d; %s-bit)",
+	     ver.major, ver.minor, ver.build, release_id, ver.revis,
+	     windows_bitness);
 }
 
 static void log_admin_status(void)
@@ -198,6 +199,8 @@ static void log_aero(void)
 	L"SOFTWARE\\Policies\\Microsoft\\Windows\\GameDVR"
 #define WIN10_GAME_DVR_REG_KEY L"System\\GameConfigStore"
 #define WIN10_GAME_MODE_REG_KEY L"Software\\Microsoft\\GameBar"
+#define WIN10_HAGS_REG_KEY \
+	L"SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers"
 
 static void log_gaming_features(void)
 {
@@ -209,6 +212,7 @@ static void log_gaming_features(void)
 	struct reg_dword game_dvr_enabled;
 	struct reg_dword game_dvr_bg_recording;
 	struct reg_dword game_mode_enabled;
+	struct reg_dword hags_enabled;
 
 	get_reg_dword(HKEY_CURRENT_USER, WIN10_GAME_BAR_REG_KEY,
 		      L"AppCaptureEnabled", &game_bar_enabled);
@@ -220,6 +224,9 @@ static void log_gaming_features(void)
 		      L"HistoricalCaptureEnabled", &game_dvr_bg_recording);
 	get_reg_dword(HKEY_CURRENT_USER, WIN10_GAME_MODE_REG_KEY,
 		      L"AllowAutoGameMode", &game_mode_enabled);
+	get_reg_dword(HKEY_LOCAL_MACHINE, WIN10_HAGS_REG_KEY, L"HwSchMode",
+		      &hags_enabled);
+
 	if (game_mode_enabled.status != ERROR_SUCCESS) {
 		get_reg_dword(HKEY_CURRENT_USER, WIN10_GAME_MODE_REG_KEY,
 			      L"AutoGameModeEnabled", &game_mode_enabled);
@@ -249,6 +256,11 @@ static void log_gaming_features(void)
 	if (game_mode_enabled.status == ERROR_SUCCESS) {
 		blog(LOG_INFO, "\tGame Mode: %s",
 		     (bool)game_mode_enabled.return_value ? "On" : "Off");
+	}
+
+	if (hags_enabled.status == ERROR_SUCCESS) {
+		blog(LOG_INFO, "\tHardware GPU Scheduler: %s",
+		     (hags_enabled.return_value == 2) ? "On" : "Off");
 	}
 }
 
@@ -1039,6 +1051,9 @@ void obs_key_to_str(obs_key_t key, struct dstr *str)
 	if (key == OBS_KEY_NONE) {
 		return;
 
+	} else if (key >= OBS_KEY_F13 && key <= OBS_KEY_F24) {
+		dstr_printf(str, "F%d", (int)(key - OBS_KEY_F13 + 13));
+		return;
 	} else if (key >= OBS_KEY_MOUSE1 && key <= OBS_KEY_MOUSE29) {
 		if (obs->hotkeys.translations[key]) {
 			dstr_copy(str, obs->hotkeys.translations[key]);
@@ -1263,9 +1278,7 @@ bool initialize_com(void)
 {
 	const HRESULT hr = CoInitializeEx(0, COINIT_APARTMENTTHREADED);
 	const bool success = SUCCEEDED(hr);
-	if (success)
-		blog(LOG_INFO, "CoInitializeEx succeeded: 0x%08X", hr);
-	else
+	if (!success)
 		blog(LOG_ERROR, "CoInitializeEx failed: 0x%08X", hr);
 	return success;
 }

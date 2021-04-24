@@ -8,6 +8,8 @@
 #include <QStaticText>
 #include <QSvgRenderer>
 #include <QAbstractListModel>
+#include <obs.hpp>
+#include <obs-frontend-api.h>
 
 class QLabel;
 class QCheckBox;
@@ -30,7 +32,11 @@ class SourceTreeItem : public QWidget {
 	friend class SourceTreeModel;
 
 	void mouseDoubleClickEvent(QMouseEvent *event) override;
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+	void enterEvent(QEnterEvent *event) override;
+#else
 	void enterEvent(QEvent *event) override;
+#endif
 	void leaveEvent(QEvent *event) override;
 
 	virtual bool eventFilter(QObject *object, QEvent *event) override;
@@ -68,6 +74,7 @@ private:
 	OBSSignal sceneRemoveSignal;
 	OBSSignal itemRemoveSignal;
 	OBSSignal groupReorderSignal;
+	OBSSignal selectSignal;
 	OBSSignal deselectSignal;
 	OBSSignal visibleSignal;
 	OBSSignal lockedSignal;
@@ -88,6 +95,7 @@ private slots:
 
 	void ExpandClicked(bool checked);
 
+	void Select();
 	void Deselect();
 };
 
@@ -144,6 +152,8 @@ class SourceTree : public QListView {
 	QStaticText textNoSources;
 	QSvgRenderer iconNoSources;
 
+	bool iconsVisible = true;
+
 	void UpdateNoSourcesMessage();
 
 	void ResetWidgets();
@@ -178,9 +188,11 @@ public:
 	bool GroupedItemsSelected() const;
 
 	void UpdateIcons();
+	void SetIconsVisible(bool visible);
 
 public slots:
 	inline void ReorderItems() { GetStm()->ReorderItems(); }
+	inline void RefreshItems() { GetStm()->SceneChanged(); }
 	void Remove(OBSSceneItem item);
 	void GroupSelectedItems();
 	void UngroupSelectedGroups();

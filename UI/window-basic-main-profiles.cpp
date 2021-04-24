@@ -22,6 +22,7 @@
 #include <QVariant>
 #include <QFileDialog>
 #include "window-basic-main.hpp"
+#include "window-basic-auto-config.hpp"
 #include "window-namedialog.hpp"
 #include "qt-wrappers.hpp"
 
@@ -93,14 +94,25 @@ static bool ProfileExists(const char *findName)
 
 static bool GetProfileName(QWidget *parent, std::string &name,
 			   std::string &file, const char *title,
-			   const char *text, const char *oldName = nullptr)
+			   const char *text, const bool showWizard,
+			   bool &wizardChecked, const char *oldName = nullptr)
 {
 	char path[512];
 	int ret;
 
 	for (;;) {
-		bool success = NameDialog::AskForName(parent, title, text, name,
-						      QT_UTF8(oldName));
+		bool success = false;
+
+		if (showWizard) {
+			success = NameDialog::AskForNameWithOption(
+				parent, title, text, name,
+				QTStr("AddProfile.WizardCheckbox"),
+				wizardChecked, QT_UTF8(oldName));
+		} else {
+			success = NameDialog::AskForName(
+				parent, title, text, name, QT_UTF8(oldName));
+		}
+
 		if (!success) {
 			return false;
 		}
@@ -193,8 +205,17 @@ bool OBSBasic::AddProfile(bool create_new, const char *title, const char *text,
 	std::string newPath;
 	ConfigFile config;
 
-	if (!GetProfileName(this, newName, newDir, title, text, init_text))
+	bool showWizardChecked = config_get_bool(App()->GlobalConfig(), "Basic",
+						 "ConfigOnNewProfile");
+
+	if (!GetProfileName(this, newName, newDir, title, text, create_new,
+			    showWizardChecked, init_text))
 		return false;
+
+	if (create_new) {
+		config_set_bool(App()->GlobalConfig(), "Basic",
+				"ConfigOnNewProfile", showWizardChecked);
+	}
 
 	std::string curDir =
 		config_get_string(App()->GlobalConfig(), "Basic", "ProfileDir");
@@ -257,6 +278,15 @@ bool OBSBasic::AddProfile(bool create_new, const char *title, const char *text,
 
 	config_save_safe(App()->GlobalConfig(), "tmp", nullptr);
 	UpdateTitleBar();
+
+	// Run auto configuration setup wizard when a new profile is made to assist
+	// setting up blank settings
+	if (create_new && showWizardChecked) {
+		AutoConfig wizard(this);
+		wizard.setModal(true);
+		wizard.show();
+		wizard.exec();
+	}
 
 	if (api) {
 		api->on_event(OBS_FRONTEND_EVENT_PROFILE_LIST_CHANGED);
@@ -496,19 +526,24 @@ void OBSBasic::on_actionImportProfile_triggered()
 		return;
 	}
 
-	QString dir = QFileDialog::getExistingDirectory(
-		this, QTStr("Basic.MainMenu.Profile.Import"), home,
-		QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
+	QString dir = SelectDirectory(
+		this, QTStr("Basic.MainMenu.Profile.Import"), home);
 
 	if (!dir.isEmpty() && !dir.isNull()) {
 		QString inputPath = QString::fromUtf8(path);
 		QFileInfo finfo(dir);
 		QString directory = finfo.fileName();
 		QString profileDir = inputPath + directory;
-		QDir folder(profileDir);
 
-		if (!folder.exists()) {
-			folder.mkpath(profileDir);
+		if (ProfileExists(directory.toStdString().c_str())) {
+			OBSMessageBox::warning(
+				this, QTStr("Basic.MainMenu.Profile.Import"),
+				QTStr("Basic.MainMenu.Profile.Exists"));
+		} else if (os_mkdir(profileDir.toStdString().c_str()) < 0) {
+			blog(LOG_WARNING,
+			     "Failed to create profile directory '%s'",
+			     directory.toStdString().c_str());
+		} else {
 			QFile::copy(dir + "/basic.ini",
 				    profileDir + "/basic.ini");
 			QFile::copy(dir + "/service.json",
@@ -518,10 +553,6 @@ void OBSBasic::on_actionImportProfile_triggered()
 			QFile::copy(dir + "/recordEncoder.json",
 				    profileDir + "/recordEncoder.json");
 			RefreshProfiles();
-		} else {
-			OBSMessageBox::warning(
-				this, QTStr("Basic.MainMenu.Profile.Import"),
-				QTStr("Basic.MainMenu.Profile.Exists"));
 		}
 	}
 }
@@ -541,9 +572,8 @@ void OBSBasic::on_actionExportProfile_triggered()
 		return;
 	}
 
-	QString dir = QFileDialog::getExistingDirectory(
-		this, QTStr("Basic.MainMenu.Profile.Export"), home,
-		QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
+	QString dir = SelectDirectory(
+		this, QTStr("Basic.MainMenu.Profile.Export"), home);
 
 	if (!dir.isEmpty() && !dir.isNull()) {
 		QString outputDir = dir + "/" + currentProfile;

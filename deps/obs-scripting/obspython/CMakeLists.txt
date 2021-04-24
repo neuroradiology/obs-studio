@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 2.8)
+cmake_minimum_required(VERSION 2.8.12)
 project(obspython)
 
 if(POLICY CMP0078)
@@ -53,6 +53,8 @@ IF(APPLE)
 ELSE()
 	SWIG_LINK_LIBRARIES(obspython obs-scripting libobs ${PYTHON_LIBRARIES})
 ENDIF()
+
+set_target_properties(_obspython PROPERTIES FOLDER "scripting")
 
 function(install_plugin_bin_swig target additional_target)
 	if(APPLE)

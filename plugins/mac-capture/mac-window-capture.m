@@ -32,12 +32,7 @@ static CGImageRef get_image(struct window_capture *wc)
 		kCGWindowListOptionIncludingWindow, wc->window.window_id);
 	[arr autorelease];
 
-	if (arr.count)
-		return CGWindowListCreateImage(
-			CGRectNull, kCGWindowListOptionIncludingWindow,
-			wc->window.window_id, wc->image_option);
-
-	if (!find_window(&wc->window, NULL, false))
+	if (!arr.count && !find_window(&wc->window, NULL, false))
 		return NULL;
 
 	return CGWindowListCreateImage(CGRectNull,
@@ -56,7 +51,7 @@ static inline void capture_frame(struct window_capture *wc)
 	size_t height = CGImageGetHeight(img);
 
 	CGRect rect = {{0, 0}, {width, height}};
-	da_reserve(wc->buffer, width * height * 4);
+	da_resize(wc->buffer, width * height * 4);
 	uint8_t *data = wc->buffer.array;
 
 	CGContextRef cg_context = CGBitmapContextCreate(

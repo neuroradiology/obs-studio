@@ -1,12 +1,13 @@
-#include "window-basic-auto-config.hpp"
-#include "window-basic-main.hpp"
-#include "qt-wrappers.hpp"
-#include "obs-app.hpp"
-
 #include <QMessageBox>
 #include <QScreen>
 
 #include <obs.hpp>
+
+#include "window-basic-auto-config.hpp"
+#include "window-basic-main.hpp"
+#include "qt-wrappers.hpp"
+#include "obs-app.hpp"
+#include "url-push-button.hpp"
 
 #include "ui_AutoConfigStartPage.h"
 #include "ui_AutoConfigVideoPage.h"
@@ -68,6 +69,18 @@ AutoConfigStartPage::AutoConfigStartPage(QWidget *parent)
 	ui->setupUi(this);
 	setTitle(QTStr("Basic.AutoConfig.StartPage"));
 	setSubTitle(QTStr("Basic.AutoConfig.StartPage.SubTitle"));
+
+	OBSBasic *main = OBSBasic::Get();
+	if (main->VCamEnabled()) {
+		QRadioButton *prioritizeVCam = new QRadioButton(
+			QTStr("Basic.AutoConfig.StartPage.PrioritizeVirtualCam"),
+			this);
+		QBoxLayout *box = reinterpret_cast<QBoxLayout *>(layout());
+		box->insertWidget(2, prioritizeVCam);
+
+		connect(prioritizeVCam, &QPushButton::clicked, this,
+			&AutoConfigStartPage::PrioritizeVCam);
+	}
 }
 
 AutoConfigStartPage::~AutoConfigStartPage()
@@ -77,7 +90,9 @@ AutoConfigStartPage::~AutoConfigStartPage()
 
 int AutoConfigStartPage::nextId() const
 {
-	return AutoConfig::VideoPage;
+	return wiz->type == AutoConfig::Type::VirtualCam
+		       ? AutoConfig::TestPage
+		       : AutoConfig::VideoPage;
 }
 
 void AutoConfigStartPage::on_prioritizeStreaming_clicked()
@@ -88,6 +103,11 @@ void AutoConfigStartPage::on_prioritizeStreaming_clicked()
 void AutoConfigStartPage::on_prioritizeRecording_clicked()
 {
 	wiz->type = AutoConfig::Type::Recording;
+}
+
+void AutoConfigStartPage::PrioritizeVCam()
+{
+	wiz->type = AutoConfig::Type::VirtualCam;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -137,13 +157,20 @@ AutoConfigVideoPage::AutoConfigVideoPage(QWidget *parent)
 	for (int i = 0; i < screens.size(); i++) {
 		QScreen *screen = screens[i];
 		QSize as = screen->size();
+		int as_width = as.width();
+		int as_height = as.height();
 
-		encRes = int(as.width() << 16) | int(as.height());
+		// Calculate physical screen resolution based on the virtual screen resolution
+		// They might differ if scaling is enabled, e.g. for HiDPI screens
+		as_width = round(as_width * screen->devicePixelRatio());
+		as_height = round(as_height * screen->devicePixelRatio());
+
+		encRes = as_width << 16 | as_height;
 
 		QString str = QTStr(RES_USE_DISPLAY)
 				      .arg(QString::number(i + 1),
-					   QString::number(as.width()),
-					   QString::number(as.height()));
+					   QString::number(as_width),
+					   QString::number(as_height));
 
 		ui->canvasRes->addItem(str, encRes);
 	}
@@ -253,6 +280,10 @@ AutoConfigStreamPage::AutoConfigStreamPage(QWidget *parent)
 		SLOT(ServiceChanged()));
 	connect(ui->customServer, SIGNAL(textChanged(const QString &)), this,
 		SLOT(ServiceChanged()));
+	connect(ui->customServer, SIGNAL(textChanged(const QString &)), this,
+		SLOT(UpdateKeyLink()));
+	connect(ui->customServer, SIGNAL(editingFinished()), this,
+		SLOT(UpdateKeyLink()));
 	connect(ui->doBandwidthTest, SIGNAL(toggled(bool)), this,
 		SLOT(ServiceChanged()));
 
@@ -261,6 +292,8 @@ AutoConfigStreamPage::AutoConfigStreamPage(QWidget *parent)
 
 	connect(ui->service, SIGNAL(currentIndexChanged(int)), this,
 		SLOT(UpdateKeyLink()));
+	connect(ui->service, SIGNAL(currentIndexChanged(int)), this,
+		SLOT(UpdateMoreInfoLink()));
 
 	connect(ui->key, SIGNAL(textChanged(const QString &)), this,
 		SLOT(UpdateCompleted()));
@@ -289,7 +322,7 @@ int AutoConfigStreamPage::nextId() const
 	return AutoConfig::TestPage;
 }
 
-inline bool AutoConfigStreamPage::IsCustom() const
+inline bool AutoConfigStreamPage::IsCustomService() const
 {
 	return ui->service->currentData().toInt() == (int)ListOpt::Custom;
 }
@@ -299,7 +332,7 @@ bool AutoConfigStreamPage::validatePage()
 	OBSData service_settings = obs_data_create();
 	obs_data_release(service_settings);
 
-	wiz->customServer = IsCustom();
+	wiz->customServer = IsCustomService();
 
 	const char *serverType = wiz->customServer ? "rtmp_custom"
 						   : "rtmp_common";
@@ -347,8 +380,6 @@ bool AutoConfigStreamPage::validatePage()
 	if (!wiz->customServer) {
 		if (wiz->serviceName == "Twitch")
 			wiz->service = AutoConfig::Service::Twitch;
-		else if (wiz->serviceName == "Smashcast")
-			wiz->service = AutoConfig::Service::Smashcast;
 		else
 			wiz->service = AutoConfig::Service::Other;
 	} else {
@@ -478,9 +509,9 @@ void AutoConfigStreamPage::ServiceChanged()
 		return;
 
 	std::string service = QT_TO_UTF8(ui->service->currentText());
-	bool regionBased = service == "Twitch" || service == "Smashcast";
+	bool regionBased = service == "Twitch";
 	bool testBandwidth = ui->doBandwidthTest->isChecked();
-	bool custom = IsCustom();
+	bool custom = IsCustomService();
 
 	ui->disconnectAccount->setVisible(false);
 
@@ -551,53 +582,75 @@ void AutoConfigStreamPage::ServiceChanged()
 	UpdateCompleted();
 }
 
+void AutoConfigStreamPage::UpdateMoreInfoLink()
+{
+	if (IsCustomService()) {
+		ui->moreInfoButton->hide();
+		return;
+	}
+
+	QString serviceName = ui->service->currentText();
+	obs_properties_t *props = obs_get_service_properties("rtmp_common");
+	obs_property_t *services = obs_properties_get(props, "service");
+
+	OBSData settings = obs_data_create();
+	obs_data_release(settings);
+
+	obs_data_set_string(settings, "service", QT_TO_UTF8(serviceName));
+	obs_property_modified(services, settings);
+
+	const char *more_info_link =
+		obs_data_get_string(settings, "more_info_link");
+
+	if (!more_info_link || (*more_info_link == '\0')) {
+		ui->moreInfoButton->hide();
+	} else {
+		ui->moreInfoButton->setTargetUrl(QUrl(more_info_link));
+		ui->moreInfoButton->show();
+	}
+	obs_properties_destroy(props);
+}
+
 void AutoConfigStreamPage::UpdateKeyLink()
 {
-	bool custom = IsCustom();
 	QString serviceName = ui->service->currentText();
+	QString customServer = ui->customServer->text();
 	bool isYoutube = false;
+	QString streamKeyLink;
 
-	if (custom)
-		serviceName = "";
-
-	QString text = QTStr("Basic.AutoConfig.StreamPage.StreamKey");
 	if (serviceName == "Twitch") {
-		text += " <a href=\"https://";
-		text += "www.twitch.tv/broadcast/dashboard/streamkey";
-		text += "\">";
-		text += QTStr(
-			"Basic.AutoConfig.StreamPage.StreamKey.LinkToSite");
-		text += "</a>";
-	} else if (serviceName == "YouTube / YouTube Gaming") {
-		text += " <a href=\"https://";
-		text += "www.youtube.com/live_dashboard";
-		text += "\">";
-		text += QTStr(
-			"Basic.AutoConfig.StreamPage.StreamKey.LinkToSite");
-		text += "</a>";
-
+		streamKeyLink = "https://dashboard.twitch.tv/settings/stream";
+	} else if (serviceName.startsWith("YouTube")) {
+		streamKeyLink = "https://www.youtube.com/live_dashboard";
 		isYoutube = true;
 	} else if (serviceName.startsWith("Restream.io")) {
-		text += " <a href=\"https://";
-		text += "restream.io/settings/streaming-setup?from=OBS";
-		text += "\">";
-		text += QTStr(
-			"Basic.AutoConfig.StreamPage.StreamKey.LinkToSite");
-		text += "</a>";
-	} else if (serviceName == "YouStreamer") {
-		text += " <a href=\"https://";
-		text += "app.youstreamer.com/stream";
-		text += "\">";
-		text += QTStr(
-			"Basic.AutoConfig.StreamPage.StreamKey.LinkToSite");
-		text += "</a>";
-	} else if (serviceName == "Facebook Live") {
-		text += " <a href=\"https://";
-		text += "www.facebook.com/live/create";
-		text += "\">";
-		text += QTStr(
-			"Basic.AutoConfig.StreamPage.StreamKey.LinkToSite");
-		text += "</a>";
+		streamKeyLink =
+			"https://restream.io/settings/streaming-setup?from=OBS";
+	} else if (serviceName == "Luzento.com - RTMP") {
+		streamKeyLink =
+			"https://cms.luzento.com/dashboard/stream-key?from=OBS";
+	} else if (serviceName == "Facebook Live" ||
+		   (customServer.contains("fbcdn.net") && IsCustomService())) {
+		streamKeyLink =
+			"https://www.facebook.com/live/producer?ref=OBS";
+	} else if (serviceName.startsWith("Twitter")) {
+		streamKeyLink = "https://studio.twitter.com/producer/sources";
+	} else if (serviceName.startsWith("YouStreamer")) {
+		streamKeyLink = "https://www.app.youstreamer.com/stream/";
+	} else if (serviceName == "Trovo") {
+		streamKeyLink = "https://studio.trovo.live/mychannel/stream";
+	} else if (serviceName == "Glimesh") {
+		streamKeyLink = "https://glimesh.tv/users/settings/stream";
+	} else if (serviceName.startsWith("OPENREC.tv")) {
+		streamKeyLink =
+			"https://www.openrec.tv/login?keep_login=true&url=https://www.openrec.tv/dashboard/live?from=obs";
+	}
+
+	if (QString(streamKeyLink).isNull()) {
+		ui->streamKeyButton->hide();
+	} else {
+		ui->streamKeyButton->setTargetUrl(QUrl(streamKeyLink));
+		ui->streamKeyButton->show();
 	}
 
 	if (isYoutube) {
@@ -606,8 +659,6 @@ void AutoConfigStreamPage::UpdateKeyLink()
 	} else {
 		ui->doBandwidthTest->setEnabled(true);
 	}
-
-	ui->streamKeyLabel->setText(text);
 }
 
 void AutoConfigStreamPage::LoadServices(bool showAll)
@@ -635,7 +686,7 @@ void AutoConfigStreamPage::LoadServices(bool showAll)
 	}
 
 	if (showAll)
-		names.sort();
+		names.sort(Qt::CaseInsensitive);
 
 	for (QString &name : names)
 		ui->service->addItem(name);
@@ -704,7 +755,7 @@ void AutoConfigStreamPage::UpdateCompleted()
 	    (ui->key->text().isEmpty() && !auth)) {
 		ready = false;
 	} else {
-		bool custom = IsCustom();
+		bool custom = IsCustomService();
 		if (custom) {
 			ready = !ui->customServer->text().isEmpty();
 		} else {
@@ -738,7 +789,7 @@ AutoConfig::AutoConfig(QWidget *parent) : QWizard(parent)
 
 	std::string serviceType;
 	GetServiceInfo(serviceType, serviceName, server, key);
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__APPLE__)
 	setWizardStyle(QWizard::ModernStyle);
 #endif
 	streamPage = new AutoConfigStreamPage();
@@ -806,6 +857,7 @@ AutoConfig::AutoConfig(QWidget *parent) : QWizard(parent)
 
 	streamPage->UpdateServerList();
 	streamPage->UpdateKeyLink();
+	streamPage->UpdateMoreInfoLink();
 	streamPage->lastService.clear();
 
 	if (!customServer) {
@@ -843,7 +895,7 @@ AutoConfig::AutoConfig(QWidget *parent) : QWizard(parent)
 		streamPage->ui->preferHardware->setChecked(preferHardware);
 	}
 
-	setOptions(0);
+	setOptions(QWizard::WizardOptions());
 	setButtonText(QWizard::FinishButton,
 		      QTStr("Basic.AutoConfig.ApplySettings"));
 	setButtonText(QWizard::BackButton, QTStr("Back"));
@@ -885,21 +937,6 @@ bool AutoConfig::CanTestServer(const char *server)
 		} else if (astrcmp_n(server, "EU:", 3) == 0) {
 			return regionEU;
 		} else if (astrcmp_n(server, "Asia:", 5) == 0) {
-			return regionAsia;
-		} else if (regionOther) {
-			return true;
-		}
-	} else if (service == Service::Smashcast) {
-		if (strcmp(server, "Default") == 0) {
-			return true;
-		} else if (astrcmp_n(server, "US-West:", 8) == 0 ||
-			   astrcmp_n(server, "US-East:", 8) == 0) {
-			return regionUS;
-		} else if (astrcmp_n(server, "EU-", 3) == 0) {
-			return regionEU;
-		} else if (astrcmp_n(server, "South Korea:", 12) == 0 ||
-			   astrcmp_n(server, "Asia:", 5) == 0 ||
-			   astrcmp_n(server, "China:", 6) == 0) {
 			return regionAsia;
 		} else if (regionOther) {
 			return true;

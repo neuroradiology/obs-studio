@@ -209,6 +209,10 @@ VisibilityCheckBox::indicator:unchecked {
     qproperty-icon: url(:res/images/revert.svg);
 }
 
+OBSMissingFiles {
+	qproperty-warningIcon: url(:res/images/alert.svg);
+}
+
 /* Source Icons */
 
 OBSBasic {
@@ -229,11 +233,6 @@ OBSBasic {
     qproperty-defaultIcon: url(:res/images/sources/default.svg);
 }
 
-QListWidget::item,
-SourceTree::item {
-	height: 24px;
-}
-
 /* Scene Tree */
 
 SceneTree {
@@ -245,4 +244,59 @@ SceneTree {
 
 * [themeID="replayIconSmall"] {
     qproperty-icon: url(:res/images/save.svg);
+}
+
+/* Studio Mode T-Bar */
+
+QSlider[themeID="tBarSlider"] {
+	height: 24px;
+}
+
+QSlider::groove:horizontal[themeID="tBarSlider"] {
+	border: 1px solid #4c4c4c;
+	height: 5px;
+	background: #DCD9D7;
+}
+
+QSlider::sub-page:horizontal[themeID="tBarSlider"] {
+	background: #DCD9D7;
+	border: 1px solid #4c4c4c;
+}
+
+QSlider::handle:horizontal[themeID="tBarSlider"] {
+	background-color: #4c4c4c;
+	width: 12px;
+	height: 24px;
+	margin: -24px 0px;
+}
+
+/* Source Context */
+#contextContainer QPushButton[themeID2=contextBarButton] {
+    padding: 0px;
+}
+
+/* Media icons */
+
+* [themeID="playIcon"] {
+    qproperty-icon: url(:res/images/media/media_play.svg);
+}
+
+* [themeID="pauseIcon"] {
+    qproperty-icon: url(:/res/images/media/media_pause.svg);
+}
+
+* [themeID="restartIcon"] {
+    qproperty-icon: url(:/res/images/media/media_restart.svg);
+}
+
+* [themeID="stopIcon"] {
+    qproperty-icon: url(:/res/images/media/media_stop.svg);
+}
+
+* [themeID="nextIcon"] {
+    qproperty-icon: url(:/res/images/media/media_next.svg);
+}
+
+* [themeID="previousIcon"] {
+    qproperty-icon: url(./Dark/media/media_previous.svg);
 }

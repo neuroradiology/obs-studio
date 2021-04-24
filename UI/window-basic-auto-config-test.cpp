@@ -4,6 +4,7 @@
 
 #include <obs.hpp>
 #include <util/platform.h>
+#include <util/util_uint64.h>
 #include <graphics/vec4.h>
 #include <graphics/graphics.h>
 #include <graphics/math-extra.h>
@@ -249,9 +250,10 @@ void AutoConfigTestPage::TestBandwidthThread()
 		GetServers(servers);
 
 	/* just use the first server if it only has one alternate server,
-	 * or if using Mixer or Restream due to their "auto" servers */
-	if (servers.size() < 3 || wiz->serviceName == "Mixer.com - FTL" ||
-	    wiz->serviceName.substr(0, 11) == "Restream.io") {
+	 * or if using Restream or Nimo TV due to their "auto" servers */
+	if (servers.size() < 3 ||
+	    wiz->serviceName.substr(0, 11) == "Restream.io" ||
+	    wiz->serviceName == "Nimo TV") {
 		servers.resize(1);
 
 	} else if (wiz->service == AutoConfig::Service::Twitch &&
@@ -413,12 +415,14 @@ void AutoConfigTestPage::TestBandwidthThread()
 		cv.wait(ul);
 
 		uint64_t total_time = os_gettime_ns() - t_start;
+		if (total_time == 0)
+			total_time = 1;
 
 		int total_bytes =
 			(int)obs_output_get_total_bytes(output) - start_bytes;
-		uint64_t bitrate = (uint64_t)total_bytes * 8 * 1000000000 /
-				   total_time / 1000;
-
+		uint64_t bitrate = util_mul_div64(
+			total_bytes, 8ULL * 1000000000ULL / 1000ULL,
+			total_time);
 		if (obs_output_get_frames_dropped(output) ||
 		    (int)bitrate < (wiz->startingBitrate * 75 / 100)) {
 			server.bitrate = (int)bitrate * 70 / 100;
@@ -454,8 +458,8 @@ void AutoConfigTestPage::TestBandwidthThread()
 		}
 	}
 
-	wiz->server = bestServer;
-	wiz->serverName = bestServerName;
+	wiz->server = std::move(bestServer);
+	wiz->serverName = std::move(bestServerName);
 	wiz->idealBitrate = bestBitrate;
 
 	QMetaObject::invokeMethod(this, "NextStage");
@@ -624,10 +628,12 @@ bool AutoConfigTestPage::TestSoftwareEncoding()
 	int i = 0;
 	int count = 1;
 
-	auto testRes = [&](long double div, int fps_num, int fps_den,
-			   bool force) {
+	auto testRes = [&](int cy, int fps_num, int fps_den, bool force) {
 		int per = ++i * 100 / count;
 		QMetaObject::invokeMethod(this, "Progress", Q_ARG(int, per));
+
+		if (cy > baseCY)
+			return true;
 
 		/* no need for more than 3 tests max */
 		if (results.size() >= 3)
@@ -640,8 +646,8 @@ bool AutoConfigTestPage::TestSoftwareEncoding()
 
 		long double fps = ((long double)fps_num / (long double)fps_den);
 
-		int cx = int((long double)baseCX / div);
-		int cy = int((long double)baseCY / div);
+		int cx = int(((long double)baseCX / (long double)baseCY) *
+			     (long double)cy);
 
 		if (!force && wiz->type != AutoConfig::Type::Recording) {
 			int est = EstimateMinBitrate(cx, cy, fps_num, fps_den);
@@ -697,38 +703,50 @@ bool AutoConfigTestPage::TestSoftwareEncoding()
 	};
 
 	if (wiz->specificFPSNum && wiz->specificFPSDen) {
-		count = 5;
-		if (!testRes(1.0, 0, 0, false))
+		count = 7;
+		if (!testRes(2160, 0, 0, false))
 			return false;
-		if (!testRes(1.5, 0, 0, false))
+		if (!testRes(1440, 0, 0, false))
 			return false;
-		if (!testRes(1.0 / 0.6, 0, 0, false))
+		if (!testRes(1080, 0, 0, false))
 			return false;
-		if (!testRes(2.0, 0, 0, false))
+		if (!testRes(720, 0, 0, false))
 			return false;
-		if (!testRes(2.25, 0, 0, true))
+		if (!testRes(480, 0, 0, false))
+			return false;
+		if (!testRes(360, 0, 0, false))
+			return false;
+		if (!testRes(240, 0, 0, true))
 			return false;
 	} else {
-		count = 10;
-		if (!testRes(1.0, 60, 1, false))
+		count = 14;
+		if (!testRes(2160, 60, 1, false))
 			return false;
-		if (!testRes(1.0, 30, 1, false))
+		if (!testRes(2160, 30, 1, false))
 			return false;
-		if (!testRes(1.5, 60, 1, false))
+		if (!testRes(1440, 60, 1, false))
 			return false;
-		if (!testRes(1.5, 30, 1, false))
+		if (!testRes(1440, 30, 1, false))
 			return false;
-		if (!testRes(1.0 / 0.6, 60, 1, false))
+		if (!testRes(1080, 60, 1, false))
 			return false;
-		if (!testRes(1.0 / 0.6, 30, 1, false))
+		if (!testRes(1080, 30, 1, false))
 			return false;
-		if (!testRes(2.0, 60, 1, false))
+		if (!testRes(720, 60, 1, false))
 			return false;
-		if (!testRes(2.0, 30, 1, false))
+		if (!testRes(720, 30, 1, false))
 			return false;
-		if (!testRes(2.25, 60, 1, false))
+		if (!testRes(480, 60, 1, false))
 			return false;
-		if (!testRes(2.25, 30, 1, true))
+		if (!testRes(480, 30, 1, false))
+			return false;
+		if (!testRes(360, 60, 1, false))
+			return false;
+		if (!testRes(360, 30, 1, false))
+			return false;
+		if (!testRes(240, 60, 1, false))
+			return false;
+		if (!testRes(240, 30, 1, true))
 			return false;
 	}
 
@@ -787,8 +805,10 @@ void AutoConfigTestPage::FindIdealHardwareResolution()
 		maxDataRate = 1280 * 720 * 30 + 1000;
 	}
 
-	auto testRes = [&](long double div, int fps_num, int fps_den,
-			   bool force) {
+	auto testRes = [&](int cy, int fps_num, int fps_den, bool force) {
+		if (cy > baseCY)
+			return;
+
 		if (results.size() >= 3)
 			return;
 
@@ -799,8 +819,8 @@ void AutoConfigTestPage::FindIdealHardwareResolution()
 
 		long double fps = ((long double)fps_num / (long double)fps_den);
 
-		int cx = int((long double)baseCX / div);
-		int cy = int((long double)baseCY / div);
+		int cx = int(((long double)baseCX / (long double)baseCY) *
+			     (long double)cy);
 
 		long double rate = (long double)cx * (long double)cy * fps;
 		if (!force && rate > maxDataRate)
@@ -825,22 +845,28 @@ void AutoConfigTestPage::FindIdealHardwareResolution()
 	};
 
 	if (wiz->specificFPSNum && wiz->specificFPSDen) {
-		testRes(1.0, 0, 0, false);
-		testRes(1.5, 0, 0, false);
-		testRes(1.0 / 0.6, 0, 0, false);
-		testRes(2.0, 0, 0, false);
-		testRes(2.25, 0, 0, true);
+		testRes(2160, 0, 0, false);
+		testRes(1440, 0, 0, false);
+		testRes(1080, 0, 0, false);
+		testRes(720, 0, 0, false);
+		testRes(480, 0, 0, false);
+		testRes(360, 0, 0, false);
+		testRes(240, 0, 0, true);
 	} else {
-		testRes(1.0, 60, 1, false);
-		testRes(1.0, 30, 1, false);
-		testRes(1.5, 60, 1, false);
-		testRes(1.5, 30, 1, false);
-		testRes(1.0 / 0.6, 60, 1, false);
-		testRes(1.0 / 0.6, 30, 1, false);
-		testRes(2.0, 60, 1, false);
-		testRes(2.0, 30, 1, false);
-		testRes(2.25, 60, 1, false);
-		testRes(2.25, 30, 1, true);
+		testRes(2160, 60, 1, false);
+		testRes(2160, 30, 1, false);
+		testRes(1440, 60, 1, false);
+		testRes(1440, 30, 1, false);
+		testRes(1080, 60, 1, false);
+		testRes(1080, 30, 1, false);
+		testRes(720, 60, 1, false);
+		testRes(720, 30, 1, false);
+		testRes(480, 60, 1, false);
+		testRes(480, 30, 1, false);
+		testRes(360, 60, 1, false);
+		testRes(360, 30, 1, false);
+		testRes(240, 60, 1, false);
+		testRes(240, 30, 1, true);
 	}
 
 	int minArea = 960 * 540 + 1000;
@@ -937,6 +963,27 @@ void AutoConfigTestPage::TestRecordingEncoderThread()
 #define QUALITY_SAME "Basic.Settings.Output.Simple.RecordingQuality.Stream"
 #define QUALITY_HIGH "Basic.Settings.Output.Simple.RecordingQuality.Small"
 
+void set_closest_res(int &cx, int &cy, struct obs_service_resolution *res_list,
+		     size_t count)
+{
+	int best_pixel_diff = 0x7FFFFFFF;
+	int start_cx = cx;
+	int start_cy = cy;
+
+	for (size_t i = 0; i < count; i++) {
+		struct obs_service_resolution &res = res_list[i];
+		int pixel_cx_diff = abs(start_cx - res.cx);
+		int pixel_cy_diff = abs(start_cy - res.cy);
+		int pixel_diff = pixel_cx_diff + pixel_cy_diff;
+
+		if (pixel_diff < best_pixel_diff) {
+			best_pixel_diff = pixel_diff;
+			cx = res.cx;
+			cy = res.cy;
+		}
+	}
+}
+
 void AutoConfigTestPage::FinalizeResults()
 {
 	ui->stackedWidget->setCurrentIndex(1);
@@ -965,7 +1012,7 @@ void AutoConfigTestPage::FinalizeResults()
 		return new QLabel(QTStr(str), this);
 	};
 
-	if (wiz->type != AutoConfig::Type::Recording) {
+	if (wiz->type == AutoConfig::Type::Streaming) {
 		const char *serverType = wiz->customServer ? "rtmp_custom"
 							   : "rtmp_common";
 
@@ -986,6 +1033,27 @@ void AutoConfigTestPage::FinalizeResults()
 		obs_service_update(service, service_settings);
 		obs_service_apply_encoder_settings(service, vencoder_settings,
 						   nullptr);
+
+		struct obs_service_resolution *res_list;
+		size_t res_count;
+		int maxFPS;
+		obs_service_get_supported_resolutions(service, &res_list,
+						      &res_count);
+		obs_service_get_max_fps(service, &maxFPS);
+
+		if (res_list) {
+			set_closest_res(wiz->idealResolutionCX,
+					wiz->idealResolutionCY, res_list,
+					res_count);
+		}
+		if (maxFPS) {
+			double idealFPS = (double)wiz->idealFPSNum /
+					  (double)wiz->idealFPSDen;
+			if (idealFPS > (double)maxFPS) {
+				wiz->idealFPSNum = maxFPS;
+				wiz->idealFPSDen = 1;
+			}
+		}
 
 		wiz->idealBitrate =
 			(int)obs_data_get_int(vencoder_settings, "bitrate");
@@ -1068,7 +1136,7 @@ void AutoConfigTestPage::NextStage()
 			started = true;
 		}
 
-		if (wiz->type == AutoConfig::Type::Recording) {
+		if (wiz->type != AutoConfig::Type::Streaming) {
 			stage = Stage::StreamEncoder;
 		} else if (!wiz->bandwidthTest) {
 			stage = Stage::BandwidthTest;
@@ -1138,8 +1206,17 @@ AutoConfigTestPage::~AutoConfigTestPage()
 
 void AutoConfigTestPage::initializePage()
 {
+	if (wiz->type == AutoConfig::Type::VirtualCam) {
+		wiz->idealResolutionCX = wiz->baseResolutionCX;
+		wiz->idealResolutionCY = wiz->baseResolutionCY;
+		wiz->idealFPSNum = 30;
+		wiz->idealFPSDen = 1;
+		stage = Stage::Finished;
+	} else {
+		stage = Stage::Starting;
+	}
+
 	setSubTitle(QTStr(SUBTITLE_TESTING));
-	stage = Stage::Starting;
 	softwareTested = false;
 	cancel = false;
 	DeleteLayout(results);

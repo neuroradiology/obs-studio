@@ -71,6 +71,12 @@ static inline GLenum convert_gs_format(enum gs_color_format format)
 		return GL_RGBA;
 	case GS_DXT5:
 		return GL_RGBA;
+	case GS_RGBA_UNORM:
+		return GL_RGBA;
+	case GS_BGRX_UNORM:
+		return GL_BGRA;
+	case GS_BGRA_UNORM:
+		return GL_BGRA;
 	case GS_UNKNOWN:
 		return 0;
 	}
@@ -86,11 +92,11 @@ static inline GLenum convert_gs_internal_format(enum gs_color_format format)
 	case GS_R8:
 		return GL_R8;
 	case GS_RGBA:
-		return GL_RGBA;
+		return GL_SRGB8_ALPHA8;
 	case GS_BGRX:
-		return GL_RGB;
+		return GL_SRGB8;
 	case GS_BGRA:
-		return GL_RGBA;
+		return GL_SRGB8_ALPHA8;
 	case GS_R10G10B10A2:
 		return GL_RGB10_A2;
 	case GS_RGBA16:
@@ -117,6 +123,12 @@ static inline GLenum convert_gs_internal_format(enum gs_color_format format)
 		return GL_COMPRESSED_RGBA_S3TC_DXT3_EXT;
 	case GS_DXT5:
 		return GL_COMPRESSED_RGBA_S3TC_DXT5_EXT;
+	case GS_RGBA_UNORM:
+		return GL_RGBA;
+	case GS_BGRX_UNORM:
+		return GL_RGB;
+	case GS_BGRA_UNORM:
+		return GL_RGBA;
 	case GS_UNKNOWN:
 		return 0;
 	}
@@ -144,17 +156,17 @@ static inline GLenum get_gl_format_type(enum gs_color_format format)
 	case GS_R16:
 		return GL_UNSIGNED_SHORT;
 	case GS_RGBA16F:
-		return GL_UNSIGNED_SHORT;
+		return GL_HALF_FLOAT;
 	case GS_RGBA32F:
 		return GL_FLOAT;
 	case GS_RG16F:
-		return GL_UNSIGNED_SHORT;
+		return GL_HALF_FLOAT;
 	case GS_RG32F:
 		return GL_FLOAT;
 	case GS_R8G8:
 		return GL_UNSIGNED_BYTE;
 	case GS_R16F:
-		return GL_UNSIGNED_SHORT;
+		return GL_HALF_FLOAT;
 	case GS_R32F:
 		return GL_FLOAT;
 	case GS_DXT1:
@@ -162,6 +174,12 @@ static inline GLenum get_gl_format_type(enum gs_color_format format)
 	case GS_DXT3:
 		return GL_UNSIGNED_BYTE;
 	case GS_DXT5:
+		return GL_UNSIGNED_BYTE;
+	case GS_RGBA_UNORM:
+		return GL_UNSIGNED_BYTE;
+	case GS_BGRX_UNORM:
+		return GL_UNSIGNED_BYTE;
+	case GS_BGRA_UNORM:
 		return GL_UNSIGNED_BYTE;
 	case GS_UNKNOWN:
 		return 0;
@@ -411,6 +429,7 @@ struct gs_shader_param {
 	int array_count;
 
 	struct gs_texture *texture;
+	bool srgb;
 
 	DARRAY(uint8_t) cur_value;
 	DARRAY(uint8_t) def_value;
@@ -527,6 +546,16 @@ struct gs_texture_2d {
 	GLuint unpack_buffer;
 };
 
+struct gs_texture_3d {
+	struct gs_texture base;
+
+	uint32_t width;
+	uint32_t height;
+	uint32_t depth;
+	bool gen_mipmaps;
+	GLuint unpack_buffer;
+};
+
 struct gs_texture_cube {
 	struct gs_texture base;
 
@@ -586,6 +615,7 @@ struct gs_device {
 	enum copy_type copy_type;
 
 	GLuint empty_vao;
+	gs_samplerstate_t *raw_load_sampler;
 
 	gs_texture_t *cur_render_target;
 	gs_zstencil_t *cur_zstencil_buffer;
@@ -617,6 +647,7 @@ extern struct fbo_info *get_fbo(gs_texture_t *tex, uint32_t width,
 				uint32_t height);
 
 extern void gl_update(gs_device_t *device);
+extern void gl_clear_context(gs_device_t *device);
 
 extern struct gl_platform *gl_platform_create(gs_device_t *device,
 					      uint32_t adapter);

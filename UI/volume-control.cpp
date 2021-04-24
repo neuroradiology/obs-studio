@@ -89,7 +89,7 @@ void VolControl::updateText()
 					  : "VolControl.SliderUnmuted";
 
 	QString sourceName = obs_source_get_name(source);
-	QString accText = QTStr(accTextLookup).arg(sourceName, db);
+	QString accText = QTStr(accTextLookup).arg(sourceName);
 
 	slider->setAccessibleName(accText);
 }
@@ -125,7 +125,8 @@ VolControl::VolControl(OBSSource source_, bool showConfig, bool vertical)
 	  levelCount(0.0f),
 	  obs_fader(obs_fader_create(OBS_FADER_LOG)),
 	  obs_volmeter(obs_volmeter_create(OBS_FADER_LOG)),
-	  vertical(vertical)
+	  vertical(vertical),
+	  contextMenu(nullptr)
 {
 	nameLabel = new QLabel();
 	volLabel = new QLabel();
@@ -161,7 +162,7 @@ VolControl::VolControl(OBSSource source_, bool showConfig, bool vertical)
 		QHBoxLayout *meterLayout = new QHBoxLayout;
 
 		volMeter = new VolumeMeter(nullptr, obs_volmeter, true);
-		slider = new SliderIgnoreScroll(Qt::Vertical);
+		slider = new VolumeSlider(obs_fader, Qt::Vertical);
 
 		nameLayout->setAlignment(Qt::AlignCenter);
 		meterLayout->setAlignment(Qt::AlignCenter);
@@ -205,7 +206,7 @@ VolControl::VolControl(OBSSource source_, bool showConfig, bool vertical)
 		QHBoxLayout *botLayout = new QHBoxLayout;
 
 		volMeter = new VolumeMeter(nullptr, obs_volmeter, false);
-		slider = new SliderIgnoreScroll(Qt::Horizontal);
+		slider = new VolumeSlider(obs_fader, Qt::Horizontal);
 
 		textLayout->setContentsMargins(0, 0, 0, 0);
 		textLayout->addWidget(nameLabel);
@@ -276,6 +277,11 @@ VolControl::VolControl(OBSSource source_, bool showConfig, bool vertical)
 	VolumeChanged();
 }
 
+void VolControl::EnableSlider(bool enable)
+{
+	slider->setEnabled(enable);
+}
+
 VolControl::~VolControl()
 {
 	obs_fader_remove_callback(obs_fader, OBSVolumeChanged, this);
@@ -286,6 +292,8 @@ VolControl::~VolControl()
 
 	obs_fader_destroy(obs_fader);
 	obs_volmeter_destroy(obs_volmeter);
+	if (contextMenu)
+		contextMenu->close();
 }
 
 QColor VolumeMeter::getBackgroundNominalColor() const
@@ -526,6 +534,8 @@ VolumeMeter::VolumeMeter(QWidget *parent, obs_volmeter_t *obs_volmeter,
 			 bool vertical)
 	: QWidget(parent), obs_volmeter(obs_volmeter), vertical(vertical)
 {
+	setAttribute(Qt::WA_OpaquePaintEvent, true);
+
 	// Use a font that can be rendered small.
 	tickFont = QFont("Arial");
 	tickFont.setPixelSize(7);
@@ -557,7 +567,8 @@ VolumeMeter::VolumeMeter(QWidget *parent, obs_volmeter_t *obs_volmeter,
 	updateTimerRef = updateTimer.toStrongRef();
 	if (!updateTimerRef) {
 		updateTimerRef = QSharedPointer<VolumeMeterTimer>::create();
-		updateTimerRef->start(34);
+		updateTimerRef->setTimerType(Qt::PreciseTimer);
+		updateTimerRef->start(16);
 		updateTimer = updateTimerRef;
 	}
 
@@ -870,7 +881,7 @@ void VolumeMeter::paintHMeter(QPainter &painter, int x, int y, int width,
 		painter.fillRect(peakPosition, y,
 				 maximumPosition - peakPosition, height,
 				 backgroundErrorColor);
-	} else {
+	} else if (int(magnitude) != 0) {
 		if (!clipping) {
 			QTimer::singleShot(CLIP_FLASH_DURATION_MS, this,
 					   SLOT(ClipEnding()));
@@ -1035,6 +1046,11 @@ void VolumeMeter::paintEvent(QPaintEvent *event)
 
 	// Actual painting of the widget starts here.
 	QPainter painter(this);
+
+	// Paint window background color (as widget is opaque)
+	QColor background = palette().color(QPalette::ColorRole::Window);
+	painter.fillRect(rect, background);
+
 	if (vertical) {
 		// Invert the Y axis to ease the math
 		painter.translate(0, height);

@@ -270,6 +270,7 @@ static inline void gl_write_structs(struct gl_shader_parser *glsp)
  *   mul      -> (change to operator)
  *   rsqrt    -> inversesqrt
  *   saturate -> (use clamp)
+ *   sincos   -> (map to manual sin/cos calls)
  *   tex*     -> texture
  *   tex*grad -> textureGrad
  *   tex*lod  -> textureLod
@@ -299,6 +300,51 @@ static bool gl_write_mul(struct gl_shader_parser *glsp,
 
 	*p_token = cfp->cur_token;
 	return true;
+}
+
+static bool gl_write_sincos(struct gl_shader_parser *glsp,
+			    struct cf_token **p_token)
+{
+	struct cf_parser *cfp = &glsp->parser.cfp;
+	struct dstr var = {0};
+	bool success = false;
+
+	cfp->cur_token = *p_token;
+
+	if (!cf_next_token(cfp))
+		return false;
+	if (!cf_token_is(cfp, "("))
+		return false;
+
+	dstr_printf(&var, "sincos_var_internal_%d", glsp->sincos_counter++);
+
+	dstr_cat(&glsp->gl_string, "float ");
+	dstr_cat_dstr(&glsp->gl_string, &var);
+	dstr_cat(&glsp->gl_string, " = ");
+	gl_write_function_contents(glsp, &cfp->cur_token, ",");
+	dstr_cat(&glsp->gl_string, "); ");
+
+	if (!cf_next_token(cfp))
+		goto fail;
+	gl_write_function_contents(glsp, &cfp->cur_token, ",");
+	dstr_cat(&glsp->gl_string, " = sin(");
+	dstr_cat_dstr(&glsp->gl_string, &var);
+	dstr_cat(&glsp->gl_string, "); ");
+
+	if (!cf_next_token(cfp))
+		goto fail;
+	gl_write_function_contents(glsp, &cfp->cur_token, ")");
+	dstr_cat(&glsp->gl_string, " = cos(");
+	dstr_cat_dstr(&glsp->gl_string, &var);
+	dstr_cat(&glsp->gl_string, ")");
+
+	success = true;
+
+fail:
+	dstr_free(&var);
+
+	*p_token = cfp->cur_token;
+	return success;
 }
 
 static bool gl_write_saturate(struct gl_shader_parser *glsp,
@@ -370,18 +416,19 @@ static bool gl_write_texture_code(struct gl_shader_parser *glsp,
 
 	const char *function_end = ")";
 
-	if (cf_token_is(cfp, "Sample"))
+	if (cf_token_is(cfp, "Sample")) {
 		written = gl_write_texture_call(glsp, var, "texture", true);
-	else if (cf_token_is(cfp, "SampleBias"))
+	} else if (cf_token_is(cfp, "SampleBias")) {
 		written = gl_write_texture_call(glsp, var, "texture", true);
-	else if (cf_token_is(cfp, "SampleGrad"))
+	} else if (cf_token_is(cfp, "SampleGrad")) {
 		written = gl_write_texture_call(glsp, var, "textureGrad", true);
-	else if (cf_token_is(cfp, "SampleLevel"))
+	} else if (cf_token_is(cfp, "SampleLevel")) {
 		written = gl_write_texture_call(glsp, var, "textureLod", true);
-	else if (cf_token_is(cfp, "Load")) {
-		written = gl_write_texture_call(glsp, var, "texelFetch", false);
-		dstr_cat(&glsp->gl_string, "(");
-		function_end = ").xy, 0)";
+	} else if (cf_token_is(cfp, "Load")) {
+		const char *const func = (strcmp(var->type, "texture3d") == 0)
+						 ? "obs_load_3d"
+						 : "obs_load_2d";
+		written = gl_write_texture_call(glsp, var, func, false);
 	}
 
 	if (!written)
@@ -404,7 +451,7 @@ static bool gl_write_intrinsic(struct gl_shader_parser *glsp,
 	bool written = true;
 
 	if (strref_cmp(&token->str, "atan2") == 0) {
-		dstr_cat(&glsp->gl_string, "atan2");
+		dstr_cat(&glsp->gl_string, "atan");
 	} else if (strref_cmp(&token->str, "ddx") == 0) {
 		dstr_cat(&glsp->gl_string, "dFdx");
 	} else if (strref_cmp(&token->str, "ddy") == 0) {
@@ -421,6 +468,8 @@ static bool gl_write_intrinsic(struct gl_shader_parser *glsp,
 		written = gl_write_saturate(glsp, &token);
 	} else if (strref_cmp(&token->str, "mul") == 0) {
 		written = gl_write_mul(glsp, &token);
+	} else if (strref_cmp(&token->str, "sincos") == 0) {
+		written = gl_write_sincos(glsp, &token);
 	} else {
 		struct shader_var *var = sp_getparam(glsp, token);
 		if (var && astrcmp_n(var->type, "texture", 7) == 0)
@@ -694,6 +743,26 @@ static bool gl_shader_buildstring(struct gl_shader_parser *glsp)
 
 	dstr_copy(&glsp->gl_string, "#version 330\n\n");
 	dstr_cat(&glsp->gl_string, "const bool obs_glsl_compile = true;\n\n");
+	dstr_cat(&glsp->gl_string,
+		 "vec4 obs_load_2d(sampler2D s, ivec3 p_lod)\n");
+	dstr_cat(&glsp->gl_string, "{\n");
+	dstr_cat(&glsp->gl_string, "\tint lod = p_lod.z;\n");
+	dstr_cat(&glsp->gl_string, "\tvec2 size = textureSize(s, lod);\n");
+	dstr_cat(&glsp->gl_string,
+		 "\tvec2 p = (vec2(p_lod.xy) + 0.5) / size;\n");
+	dstr_cat(&glsp->gl_string, "\tvec4 color = textureLod(s, p, lod);\n");
+	dstr_cat(&glsp->gl_string, "\treturn color;\n");
+	dstr_cat(&glsp->gl_string, "}\n\n");
+	dstr_cat(&glsp->gl_string,
+		 "vec4 obs_load_3d(sampler3D s, ivec4 p_lod)\n");
+	dstr_cat(&glsp->gl_string, "{\n");
+	dstr_cat(&glsp->gl_string, "\tint lod = p_lod.w;\n");
+	dstr_cat(&glsp->gl_string, "\tvec3 size = textureSize(s, lod);\n");
+	dstr_cat(&glsp->gl_string,
+		 "\tvec3 p = (vec3(p_lod.xyz) + 0.5) / size;\n");
+	dstr_cat(&glsp->gl_string, "\tvec4 color = textureLod(s, p, lod);\n");
+	dstr_cat(&glsp->gl_string, "\treturn color;\n");
+	dstr_cat(&glsp->gl_string, "}\n\n");
 	gl_write_params(glsp);
 	gl_write_inputs(glsp, main_func);
 	gl_write_outputs(glsp, main_func);

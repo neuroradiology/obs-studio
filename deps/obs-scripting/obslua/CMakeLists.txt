@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 2.8)
+cmake_minimum_required(VERSION 2.8.12)
 project(obslua)
 
 if(POLICY CMP0078)
@@ -34,6 +34,8 @@ else()
 	SWIG_ADD_MODULE(obslua lua obslua.i ../cstrcache.cpp ../cstrcache.h)
 endif()
 SWIG_LINK_LIBRARIES(obslua obs-scripting libobs ${LUA_LIBRARIES} ${EXTRA_LIBS})
+
+set_target_properties(obslua PROPERTIES FOLDER "scripting")
 
 function(install_plugin_bin_swig target additional_target)
 	if(APPLE)

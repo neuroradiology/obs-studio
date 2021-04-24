@@ -7,15 +7,28 @@ include_directories(${LIBCURL_INCLUDE_DIRS})
 include_directories(${OBS_JANSSON_INCLUDE_DIRS})
 
 set(rtmp-services_SOURCES
-	twitch.c
-	younow.c
+	service-specific/twitch.c
+	service-specific/younow.c
+	service-specific/nimotv.c
+	service-specific/showroom.c
+	service-specific/dacast.c
 	rtmp-common.c
 	rtmp-custom.c
 	rtmp-services-main.c)
 
+if(WIN32)
+	set(MODULE_DESCRIPTION "OBS RTMP Services")
+	configure_file(${CMAKE_SOURCE_DIR}/cmake/winrc/obs-module.rc.in rtmp-services.rc)
+	list(APPEND rtmp-services_SOURCES
+		rtmp-services.rc)
+endif()
+
 set(rtmp-services_HEADERS
-	twitch.h
-	younow.h
+	service-specific/twitch.h
+	service-specific/younow.h
+	service-specific/nimotv.h
+	service-specific/showroom.h
+	service-specific/dacast.h
 	rtmp-format-ver.h)
 
 set(RTMP_SERVICES_URL
@@ -40,6 +53,8 @@ target_link_libraries(rtmp-services
 	file-updater
 	${OBS_JANSSON_IMPORT}
 	${LIBCURL_LIBRARIES})
+
+set_target_properties(rtmp-services PROPERTIES FOLDER "plugins")
 
 target_include_directories(rtmp-services
 	PUBLIC

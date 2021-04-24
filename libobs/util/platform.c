@@ -392,7 +392,7 @@ size_t os_wcs_to_mbs(const wchar_t *str, size_t len, char *dst, size_t dst_size)
 	if (!str)
 		return 0;
 
-	out_len = dst ? (dst_size - 1) : wcstombs(NULL, str, len);
+	out_len = dst ? (dst_size - 1) : wcstombs(NULL, str, 0);
 
 	if (dst) {
 		if (!dst_size)
@@ -652,6 +652,9 @@ const char *os_get_path_extension(const char *path)
 	size_t pos = 0;
 	char *period;
 	char *slash;
+
+	if (!path[0])
+		return NULL;
 
 	dstr_init_copy(&temp, path);
 	dstr_replace(&temp, "\\", "/");

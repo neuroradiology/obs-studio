@@ -87,6 +87,29 @@ bool InitApplicationBundle()
 #endif
 }
 
+void CheckAppWithSameBundleID(bool &already_running)
+{
+	try {
+		NSBundle *bundle = [NSBundle mainBundle];
+		if (!bundle)
+			throw "Could not find main bundle";
+
+		NSString *bundleID = [bundle bundleIdentifier];
+		if (!bundleID)
+			throw "Could not find bundle identifier";
+
+		int app_count =
+			[NSRunningApplication
+				runningApplicationsWithBundleIdentifier:bundleID]
+				.count;
+
+		already_running = app_count > 1;
+
+	} catch (const char *error) {
+		blog(LOG_ERROR, "CheckAppWithSameBundleID: %s", error);
+	}
+}
+
 string GetDefaultVideoSavePath()
 {
 	NSFileManager *fm = [NSFileManager defaultManager];
@@ -144,14 +167,29 @@ bool IsAlwaysOnTop(QWidget *window)
 	return (window->windowFlags() & Qt::WindowStaysOnTopHint) != 0;
 }
 
+void disableColorSpaceConversion(QWidget *window)
+{
+	NSView *view =
+		(__bridge NSView *)reinterpret_cast<void *>(window->winId());
+	view.window.colorSpace = NSColorSpace.sRGBColorSpace;
+}
+
 void SetAlwaysOnTop(QWidget *window, bool enable)
 {
 	Qt::WindowFlags flags = window->windowFlags();
 
-	if (enable)
+	if (enable) {
+		/* Force the level of the window high so it sits on top of
+		 * full-screen applications like Keynote */
+		NSView *nsv = (__bridge NSView *)reinterpret_cast<void *>(
+			window->winId());
+		NSWindow *nsw = nsv.window;
+		[nsw setLevel:1024];
+
 		flags |= Qt::WindowStaysOnTopHint;
-	else
+	} else {
 		flags &= ~Qt::WindowStaysOnTopHint;
+	}
 
 	window->setWindowFlags(flags);
 	window->show();
@@ -195,4 +233,33 @@ void EnableOSXDockIcon(bool enable)
 	else
 		[NSApp setActivationPolicy:
 				NSApplicationActivationPolicyProhibited];
+}
+
+/*
+ * This custom NSApplication subclass makes the app compatible with CEF. Qt
+ * also has an NSApplication subclass, but it doesn't conflict thanks to Qt
+ * using arcane magic to hook into the NSApplication superclass itself if the
+ * program has its own NSApplication subclass.
+ */
+
+@protocol CrAppProtocol
+- (BOOL)isHandlingSendEvent;
+@end
+
+@interface OBSApplication : NSApplication <CrAppProtocol>
+@property (nonatomic, getter=isHandlingSendEvent) BOOL handlingSendEvent;
+@end
+
+@implementation OBSApplication
+- (void)sendEvent:(NSEvent *)event
+{
+	_handlingSendEvent = YES;
+	[super sendEvent:event];
+	_handlingSendEvent = NO;
+}
+@end
+
+void InstallNSApplicationSubclass()
+{
+	[OBSApplication sharedApplication];
 }
