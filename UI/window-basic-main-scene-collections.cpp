@@ -53,7 +53,7 @@ void EnumSceneCollections(std::function<bool(const char *, const char *)> &&cb)
 		if (glob->gl_pathv[i].directory)
 			continue;
 
-		obs_data_t *data =
+		OBSDataAutoRelease data =
 			obs_data_create_from_json_file_safe(filePath, "bak");
 		std::string name = obs_data_get_string(data, "name");
 
@@ -63,8 +63,6 @@ void EnumSceneCollections(std::function<bool(const char *, const char *)> &&cb)
 			name = strrchr(filePath, '/') + 1;
 			name.resize(name.size() - 5);
 		}
-
-		obs_data_release(data);
 
 		if (!cb(name.c_str(), filePath))
 			break;
@@ -166,40 +164,10 @@ bool OBSBasic::AddSceneCollection(bool create_new, const QString &qname)
 		RefreshSceneCollections();
 	};
 
+	if (api)
+		api->on_event(OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGING);
+
 	new_collection(file, name);
-
-	auto undo = [this, oldName = name](const std::string &data) {
-		std::string newPath;
-		auto cb = [&](const char *name, const char *filePath) {
-			if (strcmp(oldName.c_str(), name) != 0) {
-				newPath = filePath;
-				return false;
-			}
-			return true;
-		};
-
-		EnumSceneCollections(cb);
-		char path[512];
-		int ret = GetConfigPath(path, 512, "obs-studio/basic/scenes/");
-		if (ret <= 0) {
-			blog(LOG_WARNING,
-			     "Failed to get scene collection config path");
-			return;
-		}
-		std::string file = path + data + ".json";
-		os_unlink(file.c_str());
-		file += ".bak";
-		os_unlink(file.c_str());
-		Load(newPath.c_str());
-		RefreshSceneCollections();
-	};
-
-	auto redo = [new_collection, file, name](const std::string &) {
-		new_collection(file, name);
-	};
-
-	undo_s.add_action(QTStr("Undo.Add").arg(name.c_str()), undo, redo, file,
-			  "", NULL);
 
 	blog(LOG_INFO, "Added scene collection '%s' (%s, %s.json)",
 	     name.c_str(), create_new ? "clean" : "duplicate", file.c_str());
@@ -308,58 +276,8 @@ void OBSBasic::on_actionRenameSceneCollection_triggered()
 		return;
 	}
 
-	auto undo = [name = oname, file = oldFile, of = file,
-		     this](const std::string &) {
-		config_set_string(App()->GlobalConfig(), "Basic",
-				  "SceneCollection", name.c_str());
-		config_set_string(App()->GlobalConfig(), "Basic",
-				  "SceneCollectionFile", file.c_str());
-		SaveProjectNow();
-
-		char path[512];
-		int ret = GetConfigPath(path, 512, "obs-studio/basic/scenes/");
-		if (ret <= 0) {
-			blog(LOG_WARNING,
-			     "Failed to get scene collection config path");
-			return;
-		}
-		std::string oldFile = of;
-
-		oldFile.insert(0, path);
-		oldFile += ".json";
-		os_unlink(oldFile.c_str());
-		oldFile += ".bak";
-		os_unlink(oldFile.c_str());
-
-		UpdateTitleBar();
-		RefreshSceneCollections();
-	};
-
-	auto redo = [of = oldFile, name, file, this](const std::string &) {
-		config_set_string(App()->GlobalConfig(), "Basic",
-				  "SceneCollection", name.c_str());
-		config_set_string(App()->GlobalConfig(), "Basic",
-				  "SceneCollectionFile", file.c_str());
-		SaveProjectNow();
-
-		char path[512];
-		int ret = GetConfigPath(path, 512, "obs-studio/basic/scenes/");
-		if (ret <= 0) {
-			blog(LOG_WARNING,
-			     "Failed to get scene collection config path");
-			return;
-		}
-		std::string oldFile = of;
-
-		oldFile.insert(0, path);
-		oldFile += ".json";
-		os_unlink(oldFile.c_str());
-		oldFile += ".bak";
-		os_unlink(oldFile.c_str());
-
-		UpdateTitleBar();
-		RefreshSceneCollections();
-	};
+	if (api)
+		api->on_event(OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGING);
 
 	oldFile.insert(0, path);
 	oldFile += ".json";
@@ -374,9 +292,6 @@ void OBSBasic::on_actionRenameSceneCollection_triggered()
 
 	UpdateTitleBar();
 	RefreshSceneCollections();
-
-	undo_s.add_action(QTStr("Undo.Rename").arg(name.c_str()), undo, redo,
-			  "", "", NULL);
 
 	if (api) {
 		api->on_event(OBS_FRONTEND_EVENT_SCENE_COLLECTION_LIST_CHANGED);
@@ -425,33 +340,11 @@ void OBSBasic::on_actionRemoveSceneCollection_triggered()
 		return;
 	}
 
+	if (api)
+		api->on_event(OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGING);
+
 	oldFile.insert(0, path);
 	oldFile += ".json";
-	obs_data_t *data =
-		obs_data_create_from_json_file_safe(oldFile.c_str(), "bak");
-	obs_data_set_string(data, "undo_filename", oldFile.c_str());
-	auto undo = [this](const std::string &data) {
-		obs_data_t *dat = obs_data_create_from_json(data.c_str());
-		LoadData(dat, obs_data_get_string(dat, "undo_filename"));
-		SaveProjectNow();
-		RefreshSceneCollections();
-		obs_data_release(dat);
-	};
-
-	auto redo = [this, of = oldFile, newPath](const std::string &) {
-		std::string oldFile = of;
-		os_unlink(oldFile.c_str());
-		oldFile += ".bak";
-		os_unlink(oldFile.c_str());
-
-		Load(newPath.c_str());
-		RefreshSceneCollections();
-	};
-
-	std::string undo_data = std::string(obs_data_get_json(data));
-	undo_s.add_action(QTStr("Undo.Delete").arg(oldName.c_str()), undo, redo,
-			  undo_data, "", NULL);
-	obs_data_release(data);
 
 	os_unlink(oldFile.c_str());
 	oldFile += ".bak";
@@ -537,6 +430,9 @@ void OBSBasic::ChangeSceneCollection()
 		action->setChecked(true);
 		return;
 	}
+
+	if (api)
+		api->on_event(OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGING);
 
 	SaveProjectNow();
 

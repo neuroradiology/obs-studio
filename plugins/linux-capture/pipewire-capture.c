@@ -19,6 +19,7 @@
  */
 
 #include "pipewire.h"
+#include "portal.h"
 
 /* obs_source_info methods */
 
@@ -48,6 +49,11 @@ static void *pipewire_window_capture_create(obs_data_t *settings,
 static void pipewire_capture_destroy(void *data)
 {
 	obs_pipewire_destroy(data);
+}
+
+static void pipewire_capture_save(void *data, obs_data_t *settings)
+{
+	obs_pipewire_save(data, settings);
 }
 
 static void pipewire_capture_get_defaults(obs_data_t *settings)
@@ -104,8 +110,27 @@ static void pipewire_capture_video_render(void *data, gs_effect_t *effect)
 	obs_pipewire_video_render(data, effect);
 }
 
+static bool initialized = false;
+
 void pipewire_capture_load(void)
 {
+	uint32_t available_capture_types = portal_get_available_capture_types();
+	bool desktop_capture_available =
+		(available_capture_types & DESKTOP_CAPTURE) != 0;
+	bool window_capture_available =
+		(available_capture_types & WINDOW_CAPTURE) != 0;
+
+	if (available_capture_types == 0) {
+		blog(LOG_INFO, "[pipewire] No captures available");
+		return;
+	}
+
+	blog(LOG_INFO, "[pipewire] Available captures:");
+	if (desktop_capture_available)
+		blog(LOG_INFO, "[pipewire]     - Desktop capture");
+	if (window_capture_available)
+		blog(LOG_INFO, "[pipewire]     - Window capture");
+
 	// Desktop capture
 	const struct obs_source_info pipewire_desktop_capture_info = {
 		.id = "pipewire-desktop-capture-source",
@@ -114,6 +139,7 @@ void pipewire_capture_load(void)
 		.get_name = pipewire_desktop_capture_get_name,
 		.create = pipewire_desktop_capture_create,
 		.destroy = pipewire_capture_destroy,
+		.save = pipewire_capture_save,
 		.get_defaults = pipewire_capture_get_defaults,
 		.get_properties = pipewire_capture_get_properties,
 		.update = pipewire_capture_update,
@@ -124,7 +150,8 @@ void pipewire_capture_load(void)
 		.video_render = pipewire_capture_video_render,
 		.icon_type = OBS_ICON_TYPE_DESKTOP_CAPTURE,
 	};
-	obs_register_source(&pipewire_desktop_capture_info);
+	if (desktop_capture_available)
+		obs_register_source(&pipewire_desktop_capture_info);
 
 	// Window capture
 	const struct obs_source_info pipewire_window_capture_info = {
@@ -144,12 +171,15 @@ void pipewire_capture_load(void)
 		.video_render = pipewire_capture_video_render,
 		.icon_type = OBS_ICON_TYPE_WINDOW_CAPTURE,
 	};
-	obs_register_source(&pipewire_window_capture_info);
+	if (window_capture_available)
+		obs_register_source(&pipewire_window_capture_info);
 
 	pw_init(NULL, NULL);
+	initialized = true;
 }
 
 void pipewire_capture_unload(void)
 {
-	pw_deinit();
+	if (initialized)
+		pw_deinit();
 }

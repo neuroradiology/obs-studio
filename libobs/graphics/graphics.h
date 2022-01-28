@@ -111,6 +111,14 @@ enum gs_blend_type {
 	GS_BLEND_SRCALPHASAT,
 };
 
+enum gs_blend_op_type {
+	GS_BLEND_OP_ADD,
+	GS_BLEND_OP_SUBTRACT,
+	GS_BLEND_OP_REVERSE_SUBTRACT,
+	GS_BLEND_OP_MIN,
+	GS_BLEND_OP_MAX
+};
+
 enum gs_depth_test {
 	GS_NEVER,
 	GS_LESS,
@@ -559,10 +567,19 @@ EXPORT gs_shader_t *gs_vertexshader_create_from_file(const char *file,
 EXPORT gs_shader_t *gs_pixelshader_create_from_file(const char *file,
 						    char **error_string);
 
+enum gs_image_alpha_mode {
+	GS_IMAGE_ALPHA_STRAIGHT,
+	GS_IMAGE_ALPHA_PREMULTIPLY_SRGB,
+	GS_IMAGE_ALPHA_PREMULTIPLY,
+};
+
 EXPORT gs_texture_t *gs_texture_create_from_file(const char *file);
 EXPORT uint8_t *gs_create_texture_file_data(const char *file,
 					    enum gs_color_format *format,
 					    uint32_t *cx, uint32_t *cy);
+EXPORT uint8_t *gs_create_texture_file_data2(
+	const char *file, enum gs_image_alpha_mode alpha_mode,
+	enum gs_color_format *format, uint32_t *cx, uint32_t *cy);
 
 #define GS_FLIP_U (1 << 0)
 #define GS_FLIP_V (1 << 1)
@@ -719,6 +736,8 @@ EXPORT void gs_blend_function_separate(enum gs_blend_type src_c,
 				       enum gs_blend_type dest_c,
 				       enum gs_blend_type src_a,
 				       enum gs_blend_type dest_a);
+EXPORT void gs_blend_op(enum gs_blend_op_type op);
+
 EXPORT void gs_depth_function(enum gs_depth_test test);
 
 EXPORT void gs_stencil_function(enum gs_stencil_side side,
@@ -884,6 +903,7 @@ EXPORT void gs_texture_release_dc(gs_texture_t *gdi_tex);
 
 /** creates a windows shared texture from a texture handle */
 EXPORT gs_texture_t *gs_texture_open_shared(uint32_t handle);
+EXPORT gs_texture_t *gs_texture_open_nt_shared(uint32_t handle);
 
 #define GS_INVALID_HANDLE (uint32_t) - 1
 EXPORT uint32_t gs_texture_get_shared_handle(gs_texture_t *tex);
@@ -922,6 +942,19 @@ EXPORT gs_texture_t *gs_texture_create_from_dmabuf(
 	enum gs_color_format color_format, uint32_t n_planes, const int *fds,
 	const uint32_t *strides, const uint32_t *offsets,
 	const uint64_t *modifiers);
+
+enum gs_dmabuf_flags {
+	GS_DMABUF_FLAG_NONE = 0,
+	GS_DMABUF_FLAG_IMPLICIT_MODIFIERS_SUPPORTED = (1 << 0),
+};
+
+EXPORT bool gs_query_dmabuf_capabilities(enum gs_dmabuf_flags *dmabuf_flags,
+					 uint32_t **drm_formats,
+					 size_t *n_formats);
+
+EXPORT bool gs_query_dmabuf_modifiers_for_format(uint32_t drm_format,
+						 uint64_t **modifiers,
+						 size_t *n_modifiers);
 
 #endif
 
@@ -993,6 +1026,21 @@ static inline bool gs_is_srgb_format(enum gs_color_format format)
 		return true;
 	default:
 		return false;
+	}
+}
+
+static inline enum gs_color_format
+gs_generalize_format(enum gs_color_format format)
+{
+	switch (format) {
+	case GS_RGBA_UNORM:
+		return GS_RGBA;
+	case GS_BGRX_UNORM:
+		return GS_BGRX;
+	case GS_BGRA_UNORM:
+		return GS_BGRA;
+	default:
+		return format;
 	}
 }
 

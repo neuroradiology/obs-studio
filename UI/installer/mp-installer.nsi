@@ -10,6 +10,10 @@
 ; have replaced every OBS specific check, whether process names,
 ; application names, files, registry entries, etc.
 ;
+; To auto-install required Visual C++ components, download from
+; https://support.microsoft.com/en-us/topic/the-latest-supported-visual-c-downloads-2647da03-1eea-4433-9aff-95f26a218cc0
+; and copy to this directory (UI/installer/)
+;
 ; This script also requires OBSInstallerUtils for additional
 ; functions. You can find it at
 ; https://github.com/notr1ch/OBSInstallerUtils
@@ -25,7 +29,7 @@ ManifestDPIAware true
 !define SHORTVERSION "25.0.8"
 !endif
 
-!define APPNAMEANDVERSION "OBS Studio ${SHORTVERSION}"
+!define APPNAMEANDVERSION "${APPNAME} ${SHORTVERSION}"
 
 ; Additional script dependencies
 !include WinVer.nsh
@@ -55,14 +59,21 @@ RequestExecutionLevel admin
 ; Modern interface settings
 !include "MUI.nsh"
 
-!define MUI_ICON "obs.ico"
+!define MUI_ICON "..\..\cmake\winrc\obs-studio.ico"
 !define MUI_HEADERIMAGE_BITMAP "OBSHeader.bmp"
 !define MUI_WELCOMEFINISHPAGE_BITMAP "OBSBanner.bmp"
 
 !define MUI_ABORTWARNING
+!define MUI_FINISHPAGE_TITLE "Completed Setup"
 !define MUI_FINISHPAGE_RUN
-!define MUI_FINISHPAGE_RUN_TEXT "Launch OBS Studio ${SHORTVERSION}"
+!define MUI_FINISHPAGE_RUN_TEXT "Launch ${APPNAMEANDVERSION}"
 !define MUI_FINISHPAGE_RUN_FUNCTION "LaunchOBS"
+!define MUI_FINISHPAGE_SHOWREADME "https://github.com/obsproject/obs-studio/releases/${APPVERSION}"
+!define MUI_FINISHPAGE_SHOWREADME_TEXT "View Release Notes"
+!define MUI_FINISHPAGE_SHOWREADME_NOTCHECKED
+!define MUI_FINISHPAGE_LINK "New to OBS? Check out our 4-step Quickstart Guide."
+!define MUI_FINISHPAGE_LINK_LOCATION "https://obsproject.com/wiki/OBS-Studio-Quickstart"
+!define MUI_FINISHPAGE_LINK_COLOR 000080
 
 !define MUI_WELCOMEPAGE_TEXT "This setup will guide you through installing OBS Studio.\n\nIt is recommended that you close all other applications before starting, including OBS Studio. This will make it possible to update relevant files without having to reboot your computer.\n\nClick Next to continue."
 
@@ -81,6 +92,9 @@ RequestExecutionLevel admin
 !insertmacro MUI_PAGE_INSTFILES
 !insertmacro MUI_PAGE_FINISH
 
+!define MUI_COMPONENTSPAGE_TEXT_TOP "Check the components you want to uninstall. Keeping Settings unchecked is recommended."
+!define MUI_COMPONENTSPAGE_TEXT_COMPLIST "Select components:"
+
 ;!insertmacro MUI_UNPAGE_CONFIRM
 !insertmacro MUI_UNPAGE_COMPONENTS
 !insertmacro MUI_UNPAGE_INSTFILES
@@ -96,7 +110,7 @@ Function PreReqCheck
 		IfSilent +1 +3
 			SetErrorLevel 3
 			Quit
-		MessageBox MB_OK|MB_ICONSTOP "This version of OBS Studio is not compatible with your system.  Please use the 32bit (x86) installer."
+		MessageBox MB_OK|MB_ICONSTOP "This version of ${APPNAME} is not compatible with your system. Please use the 32bit (x86) installer."
 	${EndIf}
 	; Abort on XP or lower
 !endif
@@ -108,45 +122,6 @@ Function PreReqCheck
 		MessageBox MB_OK|MB_ICONSTOP "Due to extensive use of DirectX 10 features, ${APPNAME} requires Windows 7 or higher and cannot be installed on this version of Windows."
 		Quit
 	${EndIf}
-
-!ifdef INSTALL64
-	; 64 bit Visual Studio 2019 runtime check
-	ClearErrors
-	SetOutPath "$PLUGINSDIR"
-	File check_for_64bit_visual_studio_2019_runtimes.exe
-	ExecWait "$PLUGINSDIR\check_for_64bit_visual_studio_2019_runtimes.exe" $R0
-	Delete "$PLUGINSDIR\check_for_64bit_visual_studio_2019_runtimes.exe"
-	IntCmp $R0 126 vs2019Missing_64 vs2019OK_64
-	vs2019Missing_64:
-		IfSilent +1 +3
-			SetErrorLevel 4
-			Quit
-		MessageBox MB_YESNO|MB_ICONEXCLAMATION "Your system is missing runtime components that ${APPNAME} requires. Would you like to download them?" IDYES vs2019true_64 IDNO vs2019false_64
-		vs2019true_64:
-			ExecShell "open" "https://obsproject.com/visual-studio-2019-runtimes-64-bit"
-		vs2019false_64:
-		Quit
-	vs2019OK_64:
-	ClearErrors
-!else
-	; 32 bit Visual Studio 2019 runtime check
-	ClearErrors
-	GetDLLVersion "vcruntime140.DLL" $R0 $R1
-	GetDLLVersion "msvcp140.DLL" $R0 $R1
-	GetDLLVersion "msvcp140_1.DLL" $R0 $R1
-	IfErrors vs2019Missing_32 vs2019OK_32
-	vs2019Missing_32:
-		IfSilent +1 +3
-			SetErrorLevel 4
-			Quit
-		MessageBox MB_YESNO|MB_ICONEXCLAMATION "Your system is missing runtime components that ${APPNAME} requires. Would you like to download them?" IDYES vs2019true_32 IDNO vs2019false_32
-		vs2019true_32:
-			ExecShell "open" "https://obsproject.com/visual-studio-2019-runtimes-32-bit"
-		vs2019false_32:
-		Quit
-	vs2019OK_32:
-	ClearErrors
-!endif
 
 	; DirectX Version Check
 	ClearErrors
@@ -307,6 +282,36 @@ Section "OBS Studio" SecCore
 	File /r "new\core\obs-plugins\32bit"
 !endif
 
+!ifdef INSTALL64
+	; 64 bit Visual Studio 2019 runtime check
+	ClearErrors
+	SetOutPath "$PLUGINSDIR"
+	File check_for_64bit_visual_studio_2019_runtimes.exe
+	ExecWait "$PLUGINSDIR\check_for_64bit_visual_studio_2019_runtimes.exe" $R0
+	Delete "$PLUGINSDIR\check_for_64bit_visual_studio_2019_runtimes.exe"
+	IntCmp $R0 126 vs2019Missing_64 vs2019OK_64
+	vs2019Missing_64:
+		File VC_redist.x64.exe
+		ExecWait '"$PLUGINSDIR\VC_redist.x64.exe" /quiet /norestart'
+		Delete "$PLUGINSDIR\VC_redist.x64.exe"
+	vs2019OK_64:
+	ClearErrors
+!else
+	; 32 bit Visual Studio 2019 runtime check
+	ClearErrors
+	SetOutPath "$PLUGINSDIR"
+	GetDLLVersion "vcruntime140.DLL" $R0 $R1
+	GetDLLVersion "msvcp140.DLL" $R0 $R1
+	GetDLLVersion "msvcp140_1.DLL" $R0 $R1
+	IfErrors vs2019Missing_32 vs2019OK_32
+	vs2019Missing_32:
+		File VC_redist.x86.exe
+		ExecWait '"$PLUGINSDIR\VC_redist.x86.exe" /quiet /norestart'
+		Delete "$PLUGINSDIR\VC_redist.x86.exe"
+	vs2019OK_32:
+	ClearErrors
+!endif
+
 	# ----------------------------
 
 	SetShellVarContext all
@@ -423,7 +428,7 @@ SectionEnd
 !insertmacro MUI_FUNCTION_DESCRIPTION_END
 
 ;Uninstall section
-Section "un.obs-studio Program Files" UninstallSection1
+Section "un.${APPNAME} App Files" UninstallSection1
 
 	SectionIn RO
 
@@ -458,12 +463,14 @@ Section "un.obs-studio Program Files" UninstallSection1
 	Delete "$INSTDIR\uninstall.exe"
 
 	; Delete Shortcuts
+	SetShellVarContext all
 	Delete "$DESKTOP\OBS Studio.lnk"
 	Delete "$SMPROGRAMS\OBS Studio\OBS Studio (32bit).lnk"
 	Delete "$SMPROGRAMS\OBS Studio\Uninstall.lnk"
 	${if} ${RunningX64}
 		Delete "$SMPROGRAMS\OBS Studio\OBS Studio (64bit).lnk"
 	${endif}
+	SetShellVarContext current
 
 	IfFileExists "$INSTDIR\data\obs-plugins\win-ivcam\seg_service.exe" UnregisterSegService SkipUnreg
 	UnregisterSegService:
@@ -481,22 +488,22 @@ Section "un.obs-studio Program Files" UninstallSection1
 	RMDir "$INSTDIR\OBS Studio"
 SectionEnd
 
-Section /o "un.User Settings" UninstallSection2
+Section /o "un.Settings, Scenes, etc." UninstallSection2
 	RMDir /r "$APPDATA\obs-studio"
 SectionEnd
 
 !insertmacro MUI_UNFUNCTION_DESCRIPTION_BEGIN
 	!insertmacro MUI_DESCRIPTION_TEXT ${UninstallSection1} "Remove the OBS program files."
-	!insertmacro MUI_DESCRIPTION_TEXT ${UninstallSection2} "Removes all settings, scenes and sources, profiles, log files and other application data."
+	!insertmacro MUI_DESCRIPTION_TEXT ${UninstallSection2} "Removes all settings, scenes, sources, profiles, log files, and other application data.$\r$\n$\r$\nTHIS CANNOT BE UNDONE."
 !insertmacro MUI_UNFUNCTION_DESCRIPTION_END
 
 ; Version information
 VIProductVersion "${APPVERSION}.0"
-VIAddVersionKey /LANG=${LANG_ENGLISH} "ProductName" "OBS Studio"
-VIAddVersionKey /LANG=${LANG_ENGLISH} "CompanyName" "obsproject.com"
-VIAddVersionKey /LANG=${LANG_ENGLISH} "LegalCopyright" "(c) 2012-2020"
+VIAddVersionKey /LANG=${LANG_ENGLISH} "ProductName" "${APPNAME}"
+VIAddVersionKey /LANG=${LANG_ENGLISH} "CompanyName" "OBS Project"
+VIAddVersionKey /LANG=${LANG_ENGLISH} "LegalCopyright" "(C) 2012-2021"
 ; FileDescription is what shows in the UAC elevation prompt when signed
-VIAddVersionKey /LANG=${LANG_ENGLISH} "FileDescription" "OBS Studio"
-VIAddVersionKey /LANG=${LANG_ENGLISH} "FileVersion" "1.0"
+VIAddVersionKey /LANG=${LANG_ENGLISH} "FileDescription" "${APPNAME} Installer"
+VIAddVersionKey /LANG=${LANG_ENGLISH} "FileVersion" "${APPVERSION}"
 
 ; eof

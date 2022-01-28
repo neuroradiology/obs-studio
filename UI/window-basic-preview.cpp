@@ -1,7 +1,6 @@
 #include <QGuiApplication>
 #include <QMouseEvent>
 
-#include <algorithm>
 #include <cmath>
 #include <string>
 #include <graphics/vec4.h>
@@ -13,9 +12,6 @@
 
 #define HANDLE_RADIUS 4.0f
 #define HANDLE_SEL_RADIUS (HANDLE_RADIUS * 1.5f)
-#if QT_VERSION >= QT_VERSION_CHECK(5, 6, 0)
-#define SUPPORTS_FRACTIONAL_SCALING
-#endif
 
 /* TODO: make C++ math classes and clean up code here later */
 
@@ -36,19 +32,12 @@ OBSBasicPreview::~OBSBasicPreview()
 		gs_vertexbuffer_destroy(rectFill);
 
 	obs_leave_graphics();
-
-	if (wrapper)
-		obs_data_release(wrapper);
 }
 
 vec2 OBSBasicPreview::GetMouseEventPos(QMouseEvent *event)
 {
 	OBSBasic *main = reinterpret_cast<OBSBasic *>(App()->GetMainWindow());
-#ifdef SUPPORTS_FRACTIONAL_SCALING
 	float pixelRatio = main->devicePixelRatioF();
-#else
-	float pixelRatio = main->devicePixelRatio();
-#endif
 	float scale = pixelRatio / main->previewScale;
 	vec2 pos;
 	vec2_set(&pos,
@@ -406,11 +395,7 @@ void OBSBasicPreview::GetStretchHandleData(const vec2 &pos, bool ignoreGroup)
 	if (!scene)
 		return;
 
-#ifdef SUPPORTS_FRACTIONAL_SCALING
 	float scale = main->previewScale / main->devicePixelRatioF();
-#else
-	float scale = main->previewScale / main->devicePixelRatio();
-#endif
 	vec2 scaled_pos = pos;
 	vec2_divf(&scaled_pos, &scaled_pos, scale);
 	HandleFindData data(scaled_pos, scale);
@@ -533,11 +518,7 @@ void OBSBasicPreview::mousePressEvent(QMouseEvent *event)
 	}
 
 	OBSBasic *main = reinterpret_cast<OBSBasic *>(App()->GetMainWindow());
-#ifdef SUPPORTS_FRACTIONAL_SCALING
 	float pixelRatio = main->devicePixelRatioF();
-#else
-	float pixelRatio = main->devicePixelRatio();
-#endif
 	float x = float(event->x()) - main->previewX / pixelRatio;
 	float y = float(event->y()) - main->previewY / pixelRatio;
 	Qt::KeyboardModifiers modifiers = QGuiApplication::keyboardModifiers();
@@ -584,8 +565,6 @@ void OBSBasicPreview::mousePressEvent(QMouseEvent *event)
 	vec2_zero(&lastMoveOffset);
 
 	mousePos = startPos;
-	if (wrapper)
-		obs_data_release(wrapper);
 	wrapper =
 		obs_scene_save_transform_states(main->GetCurrentScene(), true);
 	changed = false;
@@ -593,6 +572,11 @@ void OBSBasicPreview::mousePressEvent(QMouseEvent *event)
 
 void OBSBasicPreview::UpdateCursor(uint32_t &flags)
 {
+	if (obs_sceneitem_locked(stretchItem)) {
+		unsetCursor();
+		return;
+	}
+
 	if (!flags && cursor().shape() != Qt::OpenHandCursor)
 		unsetCursor();
 	if (cursor().shape() != Qt::ArrowCursor)
@@ -722,17 +706,16 @@ void OBSBasicPreview::mouseReleaseEvent(QMouseEvent *event)
 		selectedItems.clear();
 	}
 	OBSBasic *main = reinterpret_cast<OBSBasic *>(App()->GetMainWindow());
-	obs_data_t *rwrapper =
+	OBSDataAutoRelease rwrapper =
 		obs_scene_save_transform_states(main->GetCurrentScene(), true);
 
 	auto undo_redo = [](const std::string &data) {
-		obs_data_t *dat = obs_data_create_from_json(data.c_str());
-		obs_source_t *source = obs_get_source_by_name(
+		OBSDataAutoRelease dat =
+			obs_data_create_from_json(data.c_str());
+		OBSSourceAutoRelease source = obs_get_source_by_name(
 			obs_data_get_string(dat, "scene_name"));
 		reinterpret_cast<OBSBasic *>(App()->GetMainWindow())
-			->SetCurrentScene(source, true);
-		obs_source_release(source);
-		obs_data_release(dat);
+			->SetCurrentScene(source.Get(), true);
 
 		obs_scene_load_transform_states(data.c_str());
 	};
@@ -745,17 +728,10 @@ void OBSBasicPreview::mouseReleaseEvent(QMouseEvent *event)
 				QTStr("Undo.Transform")
 					.arg(obs_source_get_name(
 						main->GetCurrentSceneSource())),
-				undo_redo, undo_redo, undo_data, redo_data,
-				NULL);
+				undo_redo, undo_redo, undo_data, redo_data);
 	}
 
-	if (wrapper)
-		obs_data_release(wrapper);
-
-	if (rwrapper)
-		obs_data_release(rwrapper);
-
-	wrapper = NULL;
+	wrapper = nullptr;
 }
 
 struct SelectedItemBounds {
@@ -1065,10 +1041,14 @@ static bool FindItemsInBox(obs_scene_t *scene, obs_sceneitem_t *item,
 	vec3 pos3;
 	vec3 pos3_;
 
-	float x1 = std::min(data->startPos.x, data->pos.x);
-	float x2 = std::max(data->startPos.x, data->pos.x);
-	float y1 = std::min(data->startPos.y, data->pos.y);
-	float y2 = std::max(data->startPos.y, data->pos.y);
+	vec2 pos_min, pos_max;
+	vec2_min(&pos_min, &data->startPos, &data->pos);
+	vec2_max(&pos_max, &data->startPos, &data->pos);
+
+	const float x1 = pos_min.x;
+	const float x2 = pos_max.x;
+	const float y1 = pos_min.y;
+	const float y2 = pos_max.y;
 
 	if (!SceneItemHasVideo(item))
 		return true;
@@ -1506,6 +1486,9 @@ void OBSBasicPreview::mouseMoveEvent(QMouseEvent *event)
 		pos.y = std::round(pos.y);
 
 		if (stretchHandle != ItemHandle::None) {
+			if (obs_sceneitem_locked(stretchItem))
+				return;
+
 			selectionBox = false;
 
 			OBSBasic *main = reinterpret_cast<OBSBasic *>(
@@ -1553,11 +1536,7 @@ void OBSBasicPreview::mouseMoveEvent(QMouseEvent *event)
 			mousePos = pos;
 			OBSBasic *main = reinterpret_cast<OBSBasic *>(
 				App()->GetMainWindow());
-#ifdef SUPPORTS_FRACTIONAL_SCALING
 			float scale = main->devicePixelRatioF();
-#else
-			float scale = main->devicePixelRatio();
-#endif
 			float x = float(event->x()) - main->previewX / scale;
 			float y = float(event->y()) - main->previewY / scale;
 			vec2_set(&startPos, x, y);
