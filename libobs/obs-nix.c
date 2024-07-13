@@ -1,5 +1,5 @@
 /******************************************************************************
-    Copyright (C) 2013 by Hugh Bailey <obs.jim@gmail.com>
+    Copyright (C) 2023 by Lain Bailey <lain@obsproject.com>
     Copyright (C) 2014 by Zachary Lund <admin@computerquip.com>
 
     This program is free software: you can redistribute it and/or modify
@@ -20,6 +20,8 @@
 #include "obs-nix.h"
 #include "obs-nix-platform.h"
 #include "obs-nix-x11.h"
+
+#include "util/config-file.h"
 
 #ifdef ENABLE_WAYLAND
 #include "obs-nix-wayland.h"
@@ -45,16 +47,10 @@ const char *get_module_extension(void)
 	return ".so";
 }
 
-#ifdef __LP64__
-#define BIT_STRING "64bit"
-#else
-#define BIT_STRING "32bit"
-#endif
-
 #define FLATPAK_PLUGIN_PATH "/app/plugins"
 
 static const char *module_bin[] = {
-	"../../obs-plugins/" BIT_STRING,
+	"../../obs-plugins/64bit",
 	OBS_INSTALL_PREFIX "/" OBS_PLUGIN_DESTINATION,
 	FLATPAK_PLUGIN_PATH "/" OBS_PLUGIN_DESTINATION,
 };
@@ -72,8 +68,29 @@ static const struct obs_nix_hotkeys_vtable *hotkeys_vtable = NULL;
 
 void add_default_module_paths(void)
 {
-	for (int i = 0; i < module_patterns_size; i++)
+	char *module_bin_path =
+		os_get_executable_path_ptr("../" OBS_PLUGIN_PATH);
+	char *module_data_path = os_get_executable_path_ptr(
+		"../" OBS_DATA_PATH "/obs-plugins/%module%");
+
+	if (module_bin_path && module_data_path) {
+		char *abs_module_bin_path =
+			os_get_abs_path_ptr(module_bin_path);
+
+		if (abs_module_bin_path &&
+		    strcmp(abs_module_bin_path, OBS_INSTALL_PREFIX
+			   "/" OBS_PLUGIN_DESTINATION) != 0) {
+			obs_add_module_path(module_bin_path, module_data_path);
+		}
+		bfree(abs_module_bin_path);
+	}
+
+	bfree(module_bin_path);
+	bfree(module_data_path);
+
+	for (int i = 0; i < module_patterns_size; i++) {
 		obs_add_module_path(module_bin[i], module_data[i]);
+	}
 }
 
 /*
@@ -87,6 +104,18 @@ char *find_libobs_data_file(const char *file)
 
 	if (check_path(file, OBS_DATA_PATH "/libobs/", &output))
 		return output.array;
+
+	char *relative_data_path =
+		os_get_executable_path_ptr("../" OBS_DATA_PATH "/libobs/");
+	if (relative_data_path) {
+		bool found = check_path(file, relative_data_path, &output);
+
+		bfree(relative_data_path);
+
+		if (found) {
+			return output.array;
+		}
+	}
 
 	if (OBS_INSTALL_PREFIX[0] != 0) {
 		if (check_path(file, OBS_INSTALL_DATA_PATH "/libobs/", &output))
@@ -262,7 +291,7 @@ static void log_kernel_version(void)
 	blog(LOG_INFO, "Kernel Version: %s %s", info.sysname, info.release);
 }
 
-#if defined(__linux__)
+#if defined(__linux__) || defined(__FreeBSD__)
 static void log_distribution_info(void)
 {
 	FILE *fp;
@@ -306,12 +335,81 @@ static void log_distribution_info(void)
 	free(line);
 }
 
+static void log_flatpak_extensions(const char *extensions)
+{
+	if (!extensions)
+		return;
+
+	char **exts_list = strlist_split(extensions, ';', false);
+	for (char **ext = exts_list; *ext != NULL; ext++) {
+		// Log the extension name without its commit hash
+		char **name = strlist_split(*ext, '=', false);
+		blog(LOG_INFO, " - %s", *name);
+		strlist_free(name);
+	}
+	strlist_free(exts_list);
+}
+
+static void log_flatpak_info(void)
+{
+	config_t *fp_info = NULL;
+
+	if (config_open(&fp_info, "/.flatpak-info", CONFIG_OPEN_EXISTING) !=
+	    CONFIG_SUCCESS) {
+		blog(LOG_ERROR, "Unable to open .flatpak-info file");
+		return;
+	}
+
+	const char *branch = config_get_string(fp_info, "Instance", "branch");
+	const char *arch = config_get_string(fp_info, "Instance", "arch");
+
+	const char *runtime =
+		config_get_string(fp_info, "Application", "runtime");
+
+	const char *app_exts =
+		config_get_string(fp_info, "Instance", "app-extensions");
+	const char *runtime_exts =
+		config_get_string(fp_info, "Instance", "runtime-extensions");
+
+	const char *fp_version =
+		config_get_string(fp_info, "Instance", "flatpak-version");
+
+	blog(LOG_INFO, "Flatpak Branch: %s", branch ? branch : "none");
+	blog(LOG_INFO, "Flatpak Arch: %s", arch ? arch : "unknown");
+
+	blog(LOG_INFO, "Flatpak Runtime: %s", runtime ? runtime : "none");
+
+	if (app_exts) {
+		blog(LOG_INFO, "App Extensions:");
+		log_flatpak_extensions(app_exts);
+	}
+
+	if (runtime_exts) {
+		blog(LOG_INFO, "Runtime Extensions:");
+		log_flatpak_extensions(runtime_exts);
+	}
+
+	blog(LOG_INFO, "Flatpak Framework Version: %s",
+	     fp_version ? fp_version : "unknown");
+
+	config_close(fp_info);
+}
+
 static void log_desktop_session_info(void)
 {
-	char *session_ptr = getenv("XDG_SESSION_TYPE");
-	if (session_ptr) {
-		blog(LOG_INFO, "Session Type: %s", session_ptr);
-	}
+	char *current_desktop = getenv("XDG_CURRENT_DESKTOP");
+	char *session_desktop = getenv("XDG_SESSION_DESKTOP");
+	char *session_type = getenv("XDG_SESSION_TYPE");
+
+	if (current_desktop && session_desktop)
+		blog(LOG_INFO, "Desktop Environment: %s (%s)", current_desktop,
+		     session_desktop);
+	else if (current_desktop || session_desktop)
+		blog(LOG_INFO, "Desktop Environment: %s",
+		     current_desktop ? current_desktop : session_desktop);
+
+	if (session_type)
+		blog(LOG_INFO, "Session Type: %s", session_type);
 }
 #endif
 
@@ -323,26 +421,21 @@ void log_system_info(void)
 	log_processor_cores();
 	log_memory_info();
 	log_kernel_version();
-#if defined(__linux__)
-	log_distribution_info();
+#if defined(__linux__) || defined(__FreeBSD__)
+	if (access("/.flatpak-info", F_OK) == 0)
+		log_flatpak_info();
+	else
+		log_distribution_info();
+
 	log_desktop_session_info();
 #endif
-	switch (obs_get_nix_platform()) {
-	case OBS_NIX_PLATFORM_X11_GLX:
-	case OBS_NIX_PLATFORM_X11_EGL:
+	if (obs_get_nix_platform() == OBS_NIX_PLATFORM_X11_EGL)
 		obs_nix_x11_log_info();
-		break;
-#ifdef ENABLE_WAYLAND
-	case OBS_NIX_PLATFORM_WAYLAND:
-		break;
-#endif
-	}
 }
 
 bool obs_hotkeys_platform_init(struct obs_core_hotkeys *hotkeys)
 {
 	switch (obs_get_nix_platform()) {
-	case OBS_NIX_PLATFORM_X11_GLX:
 	case OBS_NIX_PLATFORM_X11_EGL:
 		hotkeys_vtable = obs_nix_x11_get_hotkeys_vtable();
 		break;
@@ -351,6 +444,8 @@ bool obs_hotkeys_platform_init(struct obs_core_hotkeys *hotkeys)
 		hotkeys_vtable = obs_nix_wayland_get_hotkeys_vtable();
 		break;
 #endif
+	default:
+		break;
 	}
 
 	return hotkeys_vtable->init(hotkeys);

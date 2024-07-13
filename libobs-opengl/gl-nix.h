@@ -68,4 +68,14 @@ struct gl_winsys_vtable {
 							 uint32_t drm_format,
 							 uint64_t **modifiers,
 							 size_t *n_modifiers);
+
+	struct gs_texture *(*device_texture_create_from_pixmap)(
+		gs_device_t *device, uint32_t width, uint32_t height,
+		enum gs_color_format color_format, uint32_t target,
+		void *pixmap);
+	bool (*device_enum_adapters)(gs_device_t *device,
+				     bool (*callback)(void *param,
+						      const char *name,
+						      uint32_t id),
+				     void *param);
 };

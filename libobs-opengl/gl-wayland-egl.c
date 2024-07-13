@@ -190,7 +190,9 @@ static struct gl_platform *gl_wayland_egl_platform_create(gs_device_t *device,
 
 	device->plat = plat;
 
-	plat->display = eglGetDisplay(plat->wl_display);
+	const EGLAttrib plat_attribs[] = {EGL_NONE};
+	plat->display = eglGetPlatformDisplay(EGL_PLATFORM_WAYLAND_EXT,
+					      plat->wl_display, plat_attribs);
 	if (plat->display == EGL_NO_DISPLAY) {
 		blog(LOG_ERROR, "eglGetDisplay failed");
 		goto fail_display_init;
@@ -383,6 +385,29 @@ static bool gl_wayland_egl_device_query_dmabuf_modifiers_for_format(
 		plat->display, drm_format, modifiers, n_modifiers);
 }
 
+static struct gs_texture *gl_wayland_egl_device_texture_create_from_pixmap(
+	gs_device_t *device, uint32_t width, uint32_t height,
+	enum gs_color_format color_format, uint32_t target, void *pixmap)
+{
+	UNUSED_PARAMETER(device);
+	UNUSED_PARAMETER(width);
+	UNUSED_PARAMETER(height);
+	UNUSED_PARAMETER(color_format);
+	UNUSED_PARAMETER(target);
+	UNUSED_PARAMETER(pixmap);
+
+	return NULL;
+}
+
+static bool gl_wayland_egl_enum_adapters(gs_device_t *device,
+					 bool (*callback)(void *param,
+							  const char *name,
+							  uint32_t id),
+					 void *param)
+{
+	return gl_egl_enum_adapters(device->plat->display, callback, param);
+}
+
 static const struct gl_winsys_vtable egl_wayland_winsys_vtable = {
 	.windowinfo_create = gl_wayland_egl_windowinfo_create,
 	.windowinfo_destroy = gl_wayland_egl_windowinfo_destroy,
@@ -404,6 +429,9 @@ static const struct gl_winsys_vtable egl_wayland_winsys_vtable = {
 		gl_wayland_egl_device_query_dmabuf_capabilities,
 	.device_query_dmabuf_modifiers_for_format =
 		gl_wayland_egl_device_query_dmabuf_modifiers_for_format,
+	.device_texture_create_from_pixmap =
+		gl_wayland_egl_device_texture_create_from_pixmap,
+	.device_enum_adapters = gl_wayland_egl_enum_adapters,
 };
 
 const struct gl_winsys_vtable *gl_wayland_egl_get_winsys_vtable(void)

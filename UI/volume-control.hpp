@@ -3,14 +3,16 @@
 #include <obs.hpp>
 #include <QWidget>
 #include <QPaintEvent>
-#include <QSharedPointer>
 #include <QTimer>
 #include <QMutex>
 #include <QList>
 #include <QMenu>
+#include <QAccessibleWidget>
+#include "absolute-slider.hpp"
 
 class QPushButton;
 class VolumeMeterTimer;
+class VolumeSlider;
 
 class VolumeMeter : public QWidget {
 	Q_OBJECT
@@ -60,6 +62,10 @@ class VolumeMeter : public QWidget {
 			   setMajorTickColor DESIGNABLE true)
 	Q_PROPERTY(QColor minorTickColor READ getMinorTickColor WRITE
 			   setMinorTickColor DESIGNABLE true)
+	Q_PROPERTY(int meterThickness READ getMeterThickness WRITE
+			   setMeterThickness DESIGNABLE true)
+	Q_PROPERTY(qreal meterFontScaling READ getMeterFontScaling WRITE
+			   setMeterFontScaling DESIGNABLE true)
 
 	// Levels are denoted in dBFS.
 	Q_PROPERTY(qreal minimumLevel READ getMinimumLevel WRITE setMinimumLevel
@@ -90,40 +96,37 @@ class VolumeMeter : public QWidget {
 
 	friend class VolControl;
 
-private slots:
-	void ClipEnding();
-
 private:
 	obs_volmeter_t *obs_volmeter;
-	static QWeakPointer<VolumeMeterTimer> updateTimer;
-	QSharedPointer<VolumeMeterTimer> updateTimerRef;
+	static std::weak_ptr<VolumeMeterTimer> updateTimer;
+	std::shared_ptr<VolumeMeterTimer> updateTimerRef;
 
 	inline void resetLevels();
-	inline void handleChannelCofigurationChange();
+	inline void doLayout();
 	inline bool detectIdle(uint64_t ts);
 	inline void calculateBallistics(uint64_t ts,
 					qreal timeSinceLastRedraw = 0.0);
 	inline void calculateBallisticsForChannel(int channelNr, uint64_t ts,
 						  qreal timeSinceLastRedraw);
 
+	inline int convertToInt(float number);
 	void paintInputMeter(QPainter &painter, int x, int y, int width,
 			     int height, float peakHold);
 	void paintHMeter(QPainter &painter, int x, int y, int width, int height,
 			 float magnitude, float peak, float peakHold);
-	void paintHTicks(QPainter &painter, int x, int y, int width,
-			 int height);
+	void paintHTicks(QPainter &painter, int x, int y, int width);
 	void paintVMeter(QPainter &painter, int x, int y, int width, int height,
 			 float magnitude, float peak, float peakHold);
 	void paintVTicks(QPainter &painter, int x, int y, int height);
 
 	QMutex dataMutex;
 
+	bool recalculateLayout = true;
 	uint64_t currentLastUpdateTime = 0;
 	float currentMagnitude[MAX_AUDIO_CHANNELS];
 	float currentPeak[MAX_AUDIO_CHANNELS];
 	float currentInputPeak[MAX_AUDIO_CHANNELS];
 
-	QPixmap *tickPaintCache = nullptr;
 	int displayNrAudioChannels = 0;
 	float displayMagnitude[MAX_AUDIO_CHANNELS];
 	float displayPeak[MAX_AUDIO_CHANNELS];
@@ -151,6 +154,10 @@ private:
 	QColor magnitudeColor;
 	QColor majorTickColor;
 	QColor minorTickColor;
+
+	int meterThickness;
+	qreal meterFontScaling;
+
 	qreal minimumLevel;
 	qreal warningLevel;
 	qreal errorLevel;
@@ -160,6 +167,13 @@ private:
 	qreal magnitudeIntegrationTime;
 	qreal peakHoldDuration;
 	qreal inputPeakHoldDuration;
+
+	QColor p_backgroundNominalColor;
+	QColor p_backgroundWarningColor;
+	QColor p_backgroundErrorColor;
+	QColor p_foregroundNominalColor;
+	QColor p_foregroundWarningColor;
+	QColor p_foregroundErrorColor;
 
 	uint64_t lastRedrawTime = 0;
 	int channels = 0;
@@ -176,6 +190,8 @@ public:
 	void setLevels(const float magnitude[MAX_AUDIO_CHANNELS],
 		       const float peak[MAX_AUDIO_CHANNELS],
 		       const float inputPeak[MAX_AUDIO_CHANNELS]);
+	QRect getBarRect() const;
+	bool needLayoutChange();
 
 	QColor getBackgroundNominalColor() const;
 	void setBackgroundNominalColor(QColor c);
@@ -211,6 +227,10 @@ public:
 	void setMajorTickColor(QColor c);
 	QColor getMinorTickColor() const;
 	void setMinorTickColor(QColor c);
+	int getMeterThickness() const;
+	void setMeterThickness(int v);
+	qreal getMeterFontScaling() const;
+	void setMeterFontScaling(qreal v);
 	qreal getMinimumLevel() const;
 	void setMinimumLevel(qreal v);
 	qreal getWarningLevel() const;
@@ -235,6 +255,7 @@ public:
 
 protected:
 	void paintEvent(QPaintEvent *event) override;
+	void changeEvent(QEvent *e) override;
 };
 
 class VolumeMeterTimer : public QTimer {
@@ -252,24 +273,26 @@ protected:
 };
 
 class QLabel;
-class QSlider;
+class VolumeSlider;
 class MuteCheckBox;
+class OBSSourceLabel;
 
-class VolControl : public QWidget {
+class VolControl : public QFrame {
 	Q_OBJECT
 
 private:
 	OBSSource source;
-	QLabel *nameLabel;
+	std::vector<OBSSignal> sigs;
+	OBSSourceLabel *nameLabel;
 	QLabel *volLabel;
 	VolumeMeter *volMeter;
-	QSlider *slider;
+	VolumeSlider *slider;
 	MuteCheckBox *mute;
 	QPushButton *config = nullptr;
 	float levelTotal;
 	float levelCount;
-	obs_fader_t *obs_fader;
-	obs_volmeter_t *obs_volmeter;
+	OBSFader obs_fader;
+	OBSVolMeter obs_volmeter;
 	bool vertical;
 	QMenu *contextMenu;
 
@@ -279,12 +302,14 @@ private:
 				   const float peak[MAX_AUDIO_CHANNELS],
 				   const float inputPeak[MAX_AUDIO_CHANNELS]);
 	static void OBSVolumeMuted(void *data, calldata_t *calldata);
+	static void OBSMixersOrMonitoringChanged(void *data, calldata_t *);
 
 	void EmitConfigClicked();
 
 private slots:
 	void VolumeChanged();
 	void VolumeMuted(bool muted);
+	void MixersOrMonitoringChanged();
 
 	void SetMuted(bool checked);
 	void SliderChanged(int vol);
@@ -300,12 +325,53 @@ public:
 
 	inline obs_source_t *GetSource() const { return source; }
 
-	QString GetName() const;
-	void SetName(const QString &newName);
-
 	void SetMeterDecayRate(qreal q);
 	void setPeakMeterType(enum obs_peak_meter_type peakMeterType);
 
 	void EnableSlider(bool enable);
 	inline void SetContextMenu(QMenu *cm) { contextMenu = cm; }
+
+	void refreshColors();
+};
+
+class VolumeSlider : public AbsoluteSlider {
+	Q_OBJECT
+
+public:
+	obs_fader_t *fad;
+
+	VolumeSlider(obs_fader_t *fader, QWidget *parent = nullptr);
+	VolumeSlider(obs_fader_t *fader, Qt::Orientation orientation,
+		     QWidget *parent = nullptr);
+
+	bool getDisplayTicks() const;
+	void setDisplayTicks(bool display);
+
+private:
+	bool displayTicks = false;
+	QColor tickColor;
+
+protected:
+	virtual void paintEvent(QPaintEvent *event) override;
+};
+
+class VolumeAccessibleInterface : public QAccessibleWidget {
+
+public:
+	VolumeAccessibleInterface(QWidget *w);
+
+	QVariant currentValue() const;
+	void setCurrentValue(const QVariant &value);
+
+	QVariant maximumValue() const;
+	QVariant minimumValue() const;
+
+	QVariant minimumStepSize() const;
+
+private:
+	VolumeSlider *slider() const;
+
+protected:
+	virtual QAccessible::Role role() const override;
+	virtual QString text(QAccessible::Text t) const override;
 };

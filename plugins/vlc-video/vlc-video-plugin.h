@@ -1,16 +1,16 @@
 #include <obs-module.h>
-#include <libvlc.h>
+#include <vlc/libvlc.h>
 
 #ifdef _MSC_VER
 #include <basetsd.h>
 typedef SSIZE_T ssize_t;
 #endif
 
-#include <libvlc_media.h>
-#include <libvlc_events.h>
-#include <libvlc_media_list.h>
-#include <libvlc_media_player.h>
-#include <libvlc_media_list_player.h>
+#include <vlc/libvlc_media.h>
+#include <vlc/libvlc_events.h>
+#include <vlc/libvlc_media_list.h>
+#include <vlc/libvlc_media_player.h>
+#include <vlc/libvlc_media_list_player.h>
 
 extern libvlc_instance_t *libvlc;
 extern uint64_t time_start;
@@ -38,6 +38,10 @@ typedef void (*LIBVLC_MEDIA_RETAIN)(libvlc_media_t *p_md);
 typedef void (*LIBVLC_MEDIA_RELEASE)(libvlc_media_t *p_md);
 typedef char *(*LIBVLC_MEDIA_GET_META)(libvlc_media_t *p_md,
 				       libvlc_meta_t e_meta);
+typedef unsigned (*LIBVLC_MEDIA_TRACKS_GET)(libvlc_media_t *p_md,
+					    libvlc_media_track_t ***pp_es);
+typedef void (*LIBVLC_MEDIA_TRACKS_RELEASE)(libvlc_media_track_t **p_tracks,
+					    unsigned i_count);
 
 /* libvlc media player */
 typedef libvlc_media_player_t *(*LIBVLC_MEDIA_PLAYER_NEW)(
@@ -125,6 +129,8 @@ extern LIBVLC_MEDIA_ADD_OPTION libvlc_media_add_option_;
 extern LIBVLC_MEDIA_RELEASE libvlc_media_release_;
 extern LIBVLC_MEDIA_RETAIN libvlc_media_retain_;
 extern LIBVLC_MEDIA_GET_META libvlc_media_get_meta_;
+extern LIBVLC_MEDIA_TRACKS_GET libvlc_media_tracks_get_;
+extern LIBVLC_MEDIA_TRACKS_RELEASE libvlc_media_tracks_release_;
 
 /* libvlc media player */
 extern LIBVLC_MEDIA_PLAYER_NEW libvlc_media_player_new_;

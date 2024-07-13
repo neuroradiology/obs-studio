@@ -24,8 +24,10 @@ LIBVLC_MEDIA_NEW_PATH libvlc_media_new_path_;
 LIBVLC_MEDIA_NEW_LOCATION libvlc_media_new_location_;
 LIBVLC_MEDIA_ADD_OPTION libvlc_media_add_option_;
 LIBVLC_MEDIA_RELEASE libvlc_media_release_;
-LIBVLC_MEDIA_RELEASE libvlc_media_retain_;
+LIBVLC_MEDIA_RETAIN libvlc_media_retain_;
 LIBVLC_MEDIA_GET_META libvlc_media_get_meta_;
+LIBVLC_MEDIA_TRACKS_GET libvlc_media_tracks_get_;
+LIBVLC_MEDIA_TRACKS_RELEASE libvlc_media_tracks_release_;
 
 /* libvlc media player */
 LIBVLC_MEDIA_PLAYER_NEW libvlc_media_player_new_;
@@ -104,6 +106,8 @@ static bool load_vlc_funcs(void)
 	LOAD_VLC_FUNC(libvlc_media_release);
 	LOAD_VLC_FUNC(libvlc_media_retain);
 	LOAD_VLC_FUNC(libvlc_media_get_meta);
+	LOAD_VLC_FUNC(libvlc_media_tracks_get);
+	LOAD_VLC_FUNC(libvlc_media_tracks_release);
 
 	/* libvlc media player */
 	LOAD_VLC_FUNC(libvlc_media_player_new);
@@ -175,9 +179,9 @@ static bool load_libvlc_module(void)
 	RegCloseKey(key);
 #else
 
+/* According to otoolo -L, this is what libvlc.dylib wants. */
 #ifdef __APPLE__
 #define LIBVLC_DIR "/Applications/VLC.app/Contents/MacOS/"
-/* According to otoolo -L, this is what libvlc.dylib wants. */
 #define LIBVLC_CORE_FILE LIBVLC_DIR "lib/libvlccore.dylib"
 #define LIBVLC_FILE LIBVLC_DIR "lib/libvlc.5.dylib"
 	setenv("VLC_PLUGIN_PATH", LIBVLC_DIR "plugins", false);

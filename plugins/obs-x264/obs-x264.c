@@ -1,5 +1,5 @@
 /******************************************************************************
-    Copyright (C) 2014 by Hugh Bailey <obs.jim@gmail.com>
+    Copyright (C) 2023 by Lain Bailey <lain@obsproject.com>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -30,11 +30,15 @@
 
 #include <x264.h>
 
-#define do_log(level, format, ...)                  \
+#define do_log_enc(level, encoder, format, ...)     \
 	blog(level, "[x264 encoder: '%s'] " format, \
-	     obs_encoder_get_name(obsx264->encoder), ##__VA_ARGS__)
+	     obs_encoder_get_name(encoder), ##__VA_ARGS__)
+#define do_log(level, format, ...) \
+	do_log_enc(level, obsx264->encoder, format, ##__VA_ARGS__)
 
 #define warn(format, ...) do_log(LOG_WARNING, format, ##__VA_ARGS__)
+#define warn_enc(encoder, format, ...) \
+	do_log_enc(LOG_WARNING, encoder, format, ##__VA_ARGS__)
 #define info(format, ...) do_log(LOG_INFO, format, ##__VA_ARGS__)
 #define debug(format, ...) do_log(LOG_DEBUG, format, ##__VA_ARGS__)
 
@@ -57,6 +61,9 @@ struct obs_x264 {
 	size_t sei_size;
 
 	os_performance_token_t *performance_token;
+
+	uint32_t roi_increment;
+	float *quant_offsets;
 };
 
 /* ------------------------------------------------------------------------- */
@@ -75,6 +82,7 @@ static void clear_data(struct obs_x264 *obsx264)
 		x264_encoder_close(obsx264->context);
 		bfree(obsx264->sei);
 		bfree(obsx264->extra_data);
+		bfree(obsx264->quant_offsets);
 
 		obsx264->context = NULL;
 		obsx264->sei = NULL;
@@ -196,7 +204,9 @@ static obs_properties_t *obs_x264_props(void *unused)
 
 	obs_properties_add_int(props, "crf", TEXT_CRF, 0, 51, 1);
 
-	obs_properties_add_int(props, "keyint_sec", TEXT_KEYINT_SEC, 0, 20, 1);
+	p = obs_properties_add_int(props, "keyint_sec", TEXT_KEYINT_SEC, 0, 20,
+				   1);
+	obs_property_int_set_suffix(p, " s");
 
 	list = obs_properties_add_list(props, "preset", TEXT_PRESET,
 				       OBS_COMBO_TYPE_LIST,
@@ -229,22 +239,6 @@ static obs_properties_t *obs_x264_props(void *unused)
 	obs_property_set_visible(headers, false);
 
 	return props;
-}
-
-static bool getparam(const char *param, char **name, const char **value)
-{
-	const char *assign;
-
-	if (!param || !*param || (*param == '='))
-		return false;
-
-	assign = strchr(param, '=');
-	if (!assign || !*assign || !*(assign + 1))
-		return false;
-
-	*name = bstrdup_n(param, assign - param);
-	*value = assign + 1;
-	return true;
 }
 
 static const char *validate(struct obs_x264 *obsx264, const char *val,
@@ -315,7 +309,9 @@ static inline void set_param(struct obs_x264 *obsx264, struct obs_option option)
 	if (strcmp(name, "preset") != 0 && strcmp(name, "profile") != 0 &&
 	    strcmp(name, "tune") != 0 && strcmp(name, "fps") != 0 &&
 	    strcmp(name, "force-cfr") != 0 && strcmp(name, "width") != 0 &&
-	    strcmp(name, "height") != 0 && strcmp(name, "opencl") != 0) {
+	    strcmp(name, "height") != 0 && strcmp(name, "opencl") != 0 &&
+	    strcmp(name, "stats") != 0 && strcmp(name, "qpfile") != 0 &&
+	    strcmp(name, "pass") != 0) {
 		if (strcmp(option.name, OPENCL_ALIAS) == 0)
 			name = "opencl";
 		if (x264_param_parse(&obsx264->params, name, val) != 0)
@@ -352,13 +348,20 @@ static bool reset_x264_params(struct obs_x264 *obsx264, const char *preset,
 
 static void log_x264(void *param, int level, const char *format, va_list args)
 {
-	struct obs_x264 *obsx264 = param;
-	char str[1024];
+	static const int level_map[] = {
+		LOG_ERROR,
+		LOG_WARNING,
+		LOG_INFO,
+		LOG_DEBUG,
+	};
 
-	vsnprintf(str, 1024, format, args);
-	info("%s", str);
+	UNUSED_PARAMETER(param);
+	if (level < X264_LOG_ERROR)
+		level = X264_LOG_ERROR;
+	else if (level > X264_LOG_DEBUG)
+		level = X264_LOG_DEBUG;
 
-	UNUSED_PARAMETER(level);
+	blogva(level_map[level], format, args);
 }
 
 static inline int get_x264_cs_val(const char *const name,
@@ -470,26 +473,27 @@ static void update_params(struct obs_x264 *obsx264, obs_data_t *settings,
 
 	static const char *const smpte170m = "smpte170m";
 	static const char *const bt709 = "bt709";
-	static const char *const iec61966_2_1 = "iec61966-2-1";
-	const char *colorprim = NULL;
-	const char *transfer = NULL;
-	const char *colmatrix = NULL;
+	const char *colorprim = bt709;
+	const char *transfer = bt709;
+	const char *colmatrix = bt709;
 	switch (info.colorspace) {
-	case VIDEO_CS_601:
-		colorprim = smpte170m;
-		transfer = smpte170m;
-		colmatrix = smpte170m;
-		break;
 	case VIDEO_CS_DEFAULT:
 	case VIDEO_CS_709:
 		colorprim = bt709;
 		transfer = bt709;
 		colmatrix = bt709;
 		break;
+	case VIDEO_CS_601:
+		colorprim = smpte170m;
+		transfer = smpte170m;
+		colmatrix = smpte170m;
+		break;
 	case VIDEO_CS_SRGB:
 		colorprim = bt709;
-		transfer = iec61966_2_1;
+		transfer = "iec61966-2-1";
 		colmatrix = bt709;
+		break;
+	default:
 		break;
 	}
 
@@ -682,6 +686,32 @@ static void load_headers(struct obs_x264 *obsx264)
 
 static void *obs_x264_create(obs_data_t *settings, obs_encoder_t *encoder)
 {
+	video_t *video = obs_encoder_video(encoder);
+	const struct video_output_info *voi = video_output_get_info(video);
+	switch (voi->format) {
+	case VIDEO_FORMAT_I010:
+	case VIDEO_FORMAT_P010:
+	case VIDEO_FORMAT_P216:
+	case VIDEO_FORMAT_P416:
+		obs_encoder_set_last_error(
+			encoder, obs_module_text("HighPrecisionUnsupported"));
+		warn_enc(
+			encoder,
+			"OBS does not support using x264 with high-precision formats");
+		return NULL;
+	default:
+		if (voi->colorspace == VIDEO_CS_2100_PQ ||
+		    voi->colorspace == VIDEO_CS_2100_HLG) {
+			obs_encoder_set_last_error(
+				encoder, obs_module_text("HdrUnsupported"));
+			warn_enc(
+				encoder,
+				"OBS does not support using x264 with Rec. 2100");
+			return NULL;
+		}
+		break;
+	}
+
 	struct obs_x264 *obsx264 = bzalloc(sizeof(struct obs_x264));
 	obsx264->encoder = encoder;
 
@@ -751,6 +781,66 @@ static inline void init_pic_data(struct obs_x264 *obsx264, x264_picture_t *pic,
 	}
 }
 
+/* H.264 always uses 16x16 macroblocks */
+static const uint32_t MB_SIZE = 16;
+
+struct roi_params {
+	uint32_t mb_width;
+	uint32_t mb_height;
+	float *map;
+};
+
+static void roi_cb(void *param, struct obs_encoder_roi *roi)
+{
+	const struct roi_params *rp = param;
+
+	const uint32_t roi_left = roi->left / MB_SIZE;
+	const uint32_t roi_top = roi->top / MB_SIZE;
+	const uint32_t roi_right = (roi->right - 1) / MB_SIZE;
+	const uint32_t roi_bottom = (roi->bottom - 1) / MB_SIZE;
+	/* QP range is 0..51 */
+	const float qp_offset = -51.0f * roi->priority;
+
+	for (uint32_t mb_y = 0; mb_y < rp->mb_height; mb_y++) {
+		if (mb_y < roi_top || mb_y > roi_bottom)
+			continue;
+
+		for (uint32_t mb_x = 0; mb_x < rp->mb_width; mb_x++) {
+			if (mb_x < roi_left || mb_x > roi_right)
+				continue;
+
+			rp->map[mb_y * rp->mb_width + mb_x] = qp_offset;
+		}
+	}
+}
+
+static void add_roi(struct obs_x264 *obsx264, x264_picture_t *pic)
+{
+	const uint32_t increment =
+		obs_encoder_get_roi_increment(obsx264->encoder);
+
+	if (obsx264->quant_offsets && obsx264->roi_increment == increment) {
+		pic->prop.quant_offsets = obsx264->quant_offsets;
+		return;
+	}
+
+	const uint32_t width = obs_encoder_get_width(obsx264->encoder);
+	const uint32_t height = obs_encoder_get_height(obsx264->encoder);
+	const uint32_t mb_width = (width + MB_SIZE - 1) / MB_SIZE;
+	const uint32_t mb_height = (height + MB_SIZE - 1) / MB_SIZE;
+	const size_t map_size = sizeof(float) * mb_width * mb_height;
+
+	float *map = bzalloc(map_size);
+
+	struct roi_params par = {mb_width, mb_height, map};
+
+	obs_encoder_enum_roi(obsx264->encoder, roi_cb, &par);
+
+	pic->prop.quant_offsets = map;
+	obsx264->quant_offsets = map;
+	obsx264->roi_increment = increment;
+}
+
 static bool obs_x264_encode(void *data, struct encoder_frame *frame,
 			    struct encoder_packet *packet,
 			    bool *received_packet)
@@ -766,6 +856,9 @@ static bool obs_x264_encode(void *data, struct encoder_frame *frame,
 
 	if (frame)
 		init_pic_data(obsx264, &pic, frame);
+
+	if (obs_encoder_has_roi(obsx264->encoder))
+		add_roi(obsx264, &pic);
 
 	ret = x264_encoder_encode(obsx264->context, &nals, &nal_count,
 				  (frame ? &pic : NULL), &pic_out);
@@ -839,5 +932,5 @@ struct obs_encoder_info obs_x264_encoder = {
 	.get_extra_data = obs_x264_extra_data,
 	.get_sei_data = obs_x264_sei,
 	.get_video_info = obs_x264_video_info,
-	.caps = OBS_ENCODER_CAP_DYN_BITRATE,
+	.caps = OBS_ENCODER_CAP_DYN_BITRATE | OBS_ENCODER_CAP_ROI,
 };
